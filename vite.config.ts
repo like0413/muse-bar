@@ -8,9 +8,13 @@ import { defineConfig, lazyPlugins } from 'vite-plus'
 
 // https://vite.dev/config/
 export default defineConfig({
+  server: {
+    watch: {
+      ignored: ['**/src-tauri/**'],
+    },
+  },
   staged: {
     '*.{js,ts,tsx,vue,mts,cts}': 'vp check --fix',
-    '*.rs': 'cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check',
   },
   fmt: {
     semi: false,
