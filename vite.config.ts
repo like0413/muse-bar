@@ -1,17 +1,20 @@
 import { fileURLToPath, URL } from 'node:url'
 
-import { defineConfig, lazyPlugins } from 'vite-plus'
 import vue from '@vitejs/plugin-vue'
 import vueDevTools from 'vite-plugin-vue-devtools'
+import { defineConfig, lazyPlugins } from 'vite-plus'
 
 // https://vite.dev/config/
 export default defineConfig({
   staged: {
-    '*': 'vp check --fix',
+    '*.{js,ts,tsx,vue,mts,cts}': 'vp check --fix',
+    '*.rs': 'cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check',
   },
   fmt: {
     semi: false,
     singleQuote: true,
+    experimentalSortImports: true,
+    experimentalTailwindcss: true,
   },
   lint: {
     plugins: ['eslint', 'typescript', 'unicorn', 'oxc', 'vue'],
