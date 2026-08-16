@@ -2,7 +2,8 @@ import { fileURLToPath, URL } from 'node:url'
 
 import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
-import vueDevTools from 'vite-plugin-vue-devtools'
+import AutoImport from 'unplugin-auto-import/vite'
+// import vueDevTools from 'vite-plugin-vue-devtools'
 import { defineConfig, lazyPlugins } from 'vite-plus'
 
 // https://vite.dev/config/
@@ -77,7 +78,15 @@ export default defineConfig({
       },
     ],
   },
-  plugins: lazyPlugins(() => [vue(), tailwindcss(), vueDevTools()]),
+  plugins: lazyPlugins(() => [
+    vue(),
+    tailwindcss(),
+    AutoImport({
+      imports: ['vue', 'vue-router'],
+      dts: true,
+    }),
+    // vueDevTools(),
+  ]),
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
