@@ -19,6 +19,7 @@
     "rust:fix": "cargo clippy --manifest-path src-tauri/Cargo.toml --fix --workspace --all-targets --allow-dirty --allow-staged"
   },
   "dependencies": {
+    "@intlify/unplugin-vue-i18n": "^11.2.5",
     "@lucide/vue": "^1.31.0",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/api": "^2.11.1",

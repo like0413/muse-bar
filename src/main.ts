@@ -1,3 +1,4 @@
+import messages from '@intlify/unplugin-vue-i18n/messages'
 import { createPinia } from 'pinia'
 import { createApp } from 'vue'
 import { createI18n } from 'vue-i18n'
@@ -8,7 +9,10 @@ import router from './router'
 import './style.css'
 
 const i18n = createI18n({
-  // something vue-i18n options here ...
+  legacy: false,
+  locale: 'zh',
+  fallbackLocale: 'zh',
+  messages,
 })
 
 const app = createApp(App)
