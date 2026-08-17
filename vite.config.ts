@@ -15,6 +15,10 @@ export default defineConfig({
   },
   staged: {
     '*.{js,ts,tsx,vue,mts,cts}': 'vp check --fix',
+    '*.rs': () => [
+      'cargo fmt --manifest-path src-tauri/Cargo.toml',
+      'cargo clippy --manifest-path src-tauri/Cargo.toml --fix --workspace --all-targets --allow-dirty --allow-staged',
+    ],
   },
   fmt: {
     semi: false,
