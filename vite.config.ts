@@ -23,10 +23,14 @@ export default defineConfig({
     ],
   },
   fmt: {
+    ignorePatterns: ['auto-imports.d.ts'],
     semi: false,
     singleQuote: true,
     experimentalSortImports: true,
     experimentalTailwindcss: true,
+  },
+  test: {
+    include: ['src/**/*.test.ts'],
   },
   lint: {
     plugins: ['eslint', 'typescript', 'unicorn', 'oxc', 'vue'],
