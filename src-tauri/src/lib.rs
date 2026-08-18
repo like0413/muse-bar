@@ -1,3 +1,4 @@
+/// 配置插件并启动整个应用共享的 Tauri 运行时。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()

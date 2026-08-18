@@ -1,14 +1,12 @@
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath, URL } from 'node:url'
 
-// import vueDevTools from 'vite-plugin-vue-devtools'
 import VueI18nPlugin from '@intlify/unplugin-vue-i18n/vite'
 import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
 import AutoImport from 'unplugin-auto-import/vite'
 import { defineConfig, lazyPlugins } from 'vite-plus'
 
-// https://vite.dev/config/
 export default defineConfig({
   server: {
     watch: {
@@ -28,9 +26,6 @@ export default defineConfig({
     singleQuote: true,
     experimentalSortImports: true,
     experimentalTailwindcss: true,
-  },
-  test: {
-    include: ['src/**/*.test.ts'],
   },
   lint: {
     plugins: ['eslint', 'typescript', 'unicorn', 'oxc', 'vue'],
@@ -102,7 +97,6 @@ export default defineConfig({
     VueI18nPlugin({
       include: resolve(dirname(fileURLToPath(import.meta.url)), './src/locales/**'),
     }),
-    // vueDevTools(),
   ]),
   resolve: {
     alias: {

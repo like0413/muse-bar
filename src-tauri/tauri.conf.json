@@ -12,10 +12,12 @@
   "app": {
     "windows": [
       {
+        "label": "bar",
         "title": "Muse Bar",
-        "width": 800,
-        "height": 600,
-        "resizable": true,
+        "url": "index.html#/bar",
+        "width": 420,
+        "height": 96,
+        "resizable": false,
         "fullscreen": false
       }
     ],

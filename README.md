@@ -37,16 +37,10 @@ vp exec tauri dev
 
 Tauri 会依据 `src-tauri/tauri.conf.json` 自动启动前端开发服务器。
 
-## 日常验证
+## 提交时自动校验
 
-```powershell
-vp check
-vp test
-vp run type-check
-cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
-cargo test --manifest-path src-tauri/Cargo.toml
-```
+开发过程中不需要手动运行 lint、format 或 check。执行 Git 提交时，`vite.config.ts`
+中的 staged hooks 会自动修复并检查前端代码，同时格式化和检查 Rust 代码。
 
 `vp build` 只构建 Vue 前端。完整 Windows 应用和安装包使用：
 
@@ -67,5 +61,6 @@ vp exec tauri build
 
 1. 先说明该步骤解决的问题、涉及文件和数据流。
 2. 只实现当前范围，不提前加入后续功能。
-3. 运行与风险相称的自动检查，并给出可观察结果。
-4. 独立提交，提交信息只描述这一小步。
+3. 为项目自有函数说明用途；复杂逻辑额外解释设计原因，显而易见的简单逻辑不堆砌注释。
+4. 提交前由用户运行当前功能；提交时由 staged hooks 自动执行代码检查。
+5. 独立提交，提交信息只描述这一小步。
