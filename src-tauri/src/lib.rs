@@ -1,3 +1,6 @@
+/// 前端可调用的 Tauri 命令。
+pub mod commands;
+
 /// 应用级共享状态及其只读访问接口。
 pub mod state;
 
@@ -16,6 +19,9 @@ pub fn run() {
             }
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![
+            commands::runtime::get_runtime_info
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
