@@ -1,4 +1,9 @@
+use std::{error::Error, fs, io::ErrorKind, path::PathBuf};
+
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager, Runtime};
+
+const SETTINGS_FILE_NAME: &str = "settings.json";
 
 /// Bar 窗口与 Windows 任务栏之间的宿主模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,4 +60,24 @@ impl Default for AppSettings {
             launch_on_startup: false,
         }
     }
+}
+
+impl AppSettings {
+    /// 从应用配置目录读取设置；首次启动尚无设置文件时返回默认值。
+    pub fn load<R: Runtime>(app: &AppHandle<R>) -> Result<Self, Box<dyn Error>> {
+        let settings_path = settings_file_path(app)?;
+
+        let contents = match fs::read_to_string(settings_path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => return Err(error.into()),
+        };
+
+        Ok(serde_json::from_str(&contents)?)
+    }
+}
+
+/// 返回当前应用专属配置目录中的设置文件路径。
+fn settings_file_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, tauri::Error> {
+    Ok(app.path().app_config_dir()?.join(SETTINGS_FILE_NAME))
 }

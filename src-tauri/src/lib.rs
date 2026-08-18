@@ -1,3 +1,5 @@
+use tauri::Manager;
+
 /// 前端可调用的 Tauri 命令。
 pub mod commands;
 
@@ -11,8 +13,10 @@ pub mod state;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(state::AppState::new(env!("CARGO_PKG_VERSION")))
         .setup(|app| {
+            let settings = settings::AppSettings::load(app.handle())?;
+            app.manage(state::AppState::new(env!("CARGO_PKG_VERSION"), settings));
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
