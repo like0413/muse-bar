@@ -1,6 +1,9 @@
 /// 前端可调用的 Tauri 命令。
 pub mod commands;
 
+/// 用户设置的数据结构与默认值。
+pub mod settings;
+
 /// 应用级共享状态及其只读访问接口。
 pub mod state;
 
