@@ -12,6 +12,10 @@ pub mod settings;
 /// 应用级共享状态及其只读访问接口。
 pub mod state;
 
+/// Windows 任务栏的发现与运行时信息。
+#[cfg(target_os = "windows")]
+pub mod taskbar;
+
 /// 配置插件并启动整个应用共享的 Tauri 运行时。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -30,6 +34,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::diagnostics::get_taskbar_identity,
             commands::runtime::get_runtime_info,
             commands::settings::get_settings,
             commands::settings::update_settings
