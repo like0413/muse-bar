@@ -7,14 +7,17 @@ import {
   getCurrentPlaybackCapabilities,
   getCurrentPlaybackStatus,
   getCurrentTimeline,
+  listenToMediaSessionActivityChanges,
   listenToCurrentMediaMetadataChanges,
   listenToCurrentPlaybackCapabilitiesChanges,
   listenToCurrentPlaybackStatusChanges,
   listenToCurrentTimelineChanges,
+  refreshSelectedMediaSession,
   type CurrentMediaMetadata,
   type CurrentPlaybackCapabilities,
   type CurrentPlaybackStatus,
   type CurrentTimeline,
+  type MediaSelectionReason,
 } from '@/lib/media-api'
 import { openSettingsWindow } from '@/lib/settings-window'
 
@@ -28,10 +31,12 @@ const playbackCapabilitiesText = ref('')
 const timelineText = ref('')
 const timelineDetails = ref('')
 const settingsWindowError = ref('')
+const mediaSelectionText = ref('')
 let stopMediaMetadataListener: UnlistenFn | undefined
 let stopPlaybackCapabilitiesListener: UnlistenFn | undefined
 let stopPlaybackStatusListener: UnlistenFn | undefined
 let stopTimelineListener: UnlistenFn | undefined
+let stopMediaActivityListener: UnlistenFn | undefined
 let hasUnmounted = false
 
 const mediaDetails = computed(() =>
@@ -39,6 +44,7 @@ const mediaDetails = computed(() =>
     mediaMetadataDetails.value,
     timelineDetails.value,
     playbackCapabilitiesText.value && `控制能力：${playbackCapabilitiesText.value}`,
+    mediaSelectionText.value,
   ]
     .filter(Boolean)
     .join('\n'),
@@ -64,6 +70,12 @@ const playbackStatusLabels: Record<CurrentPlaybackStatus, string> = {
   playing: '播放中',
   paused: '已暂停',
   unknown: '状态未知',
+}
+
+const selectionReasonLabels: Record<MediaSelectionReason, string> = {
+  playingPreferred: '最近播放的音乐播放器',
+  lastPausedPreferred: '最近暂停的音乐播放器',
+  windowsCurrentFallback: 'Windows 当前媒体',
 }
 
 /** 将当前会话元数据转换为 Bar 的文本和完整悬停说明。 */
@@ -99,6 +111,18 @@ async function handleOpenSettings(): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     settingsWindowError.value = `设置页打开失败：${message}`
+  }
+}
+
+/** 请求 Rust 应用最新会话选择，并把选择原因加入悬停诊断文本。 */
+async function applyLatestMediaSelection(): Promise<void> {
+  try {
+    const selection = await refreshSelectedMediaSession()
+    mediaSelectionText.value = selection
+      ? `选择：${selectionReasonLabels[selection.reason]}`
+      : '选择：当前没有媒体会话'
+  } catch {
+    mediaSelectionText.value = '选择：刷新失败'
   }
 }
 
@@ -261,10 +285,29 @@ async function startTimelineListener() {
   }
 }
 
+/** 只在 Bar 页面监听活动变化，并触发 Rust 重新应用全局播放器选择。 */
+async function startMediaSelectionListener(): Promise<void> {
+  try {
+    const stopListener = await listenToMediaSessionActivityChanges(() => {
+      void applyLatestMediaSelection()
+    })
+    if (hasUnmounted) {
+      stopListener()
+      return
+    }
+
+    stopMediaActivityListener = stopListener
+    await applyLatestMediaSelection()
+  } catch {
+    mediaSelectionText.value = '选择：监听失败'
+  }
+}
+
 onMounted(startMediaMetadataListener)
 onMounted(startPlaybackCapabilitiesListener)
 onMounted(startPlaybackStatusListener)
 onMounted(startTimelineListener)
+onMounted(startMediaSelectionListener)
 
 onBeforeUnmount(() => {
   hasUnmounted = true
@@ -272,6 +315,7 @@ onBeforeUnmount(() => {
   stopPlaybackCapabilitiesListener?.()
   stopPlaybackStatusListener?.()
   stopTimelineListener?.()
+  stopMediaActivityListener?.()
 })
 </script>
 

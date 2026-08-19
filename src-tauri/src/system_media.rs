@@ -7,7 +7,12 @@ use std::{
     thread,
 };
 
-use crate::platform::windows::{DwmGetColorizationColor, BOOL};
+use crate::{
+    media_activity::{
+        session_key, MediaActivityTracker, MediaSessionActivity, SelectedMediaSession,
+    },
+    platform::windows::{DwmGetColorizationColor, BOOL},
+};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime};
@@ -46,7 +51,7 @@ pub(crate) struct CurrentMediaMetadata {
 }
 
 /// Muse Bar 用于会话选择和诊断的播放器类别。
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum MediaPlayerKind {
     #[serde(rename = "qqMusic")]
     QqMusic,
@@ -64,6 +69,7 @@ pub(crate) enum MediaPlayerKind {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MediaSessionIdentity {
+    session_key: u64,
     source_app_id: String,
     player_kind: MediaPlayerKind,
 }
@@ -124,6 +130,7 @@ pub(crate) struct CurrentTimeline {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MediaSnapshot {
+    session_key: u64,
     source_app_id: String,
     player_kind: MediaPlayerKind,
     title: String,
@@ -290,6 +297,7 @@ pub(crate) struct SystemMediaManager {
     current_session_changed_token: Option<i64>,
     current_session_observation: Arc<Mutex<CurrentSessionObservation>>,
     media_metadata_loader: Arc<MediaMetadataLoader>,
+    media_activity_tracker: Option<MediaActivityTracker>,
 }
 
 impl SystemMediaManager {
@@ -304,15 +312,21 @@ impl SystemMediaManager {
                 log::error!("无法初始化 Windows 全局系统媒体管理器：{error}");
             })
             .ok();
-        let sessions_changed_token = manager
-            .as_ref()
-            .and_then(|manager| subscribe_to_sessions_changed(manager, app).ok());
+        let media_activity_tracker = manager.as_ref().and_then(|manager| {
+            MediaActivityTracker::start(manager, app)
+                .map_err(|error| log::error!("无法启动媒体活动跟踪：{error}"))
+                .ok()
+        });
+        let sessions_changed_token = manager.as_ref().and_then(|manager| {
+            subscribe_to_sessions_changed(manager, app, media_activity_tracker.clone()).ok()
+        });
         let current_session_changed_token = manager.as_ref().and_then(|manager| {
             subscribe_to_current_session_changed(
                 manager,
                 app,
                 Arc::clone(&current_session_observation),
                 Arc::clone(&media_metadata_loader),
+                media_activity_tracker.clone(),
             )
             .ok()
         });
@@ -326,6 +340,10 @@ impl SystemMediaManager {
             ) {
                 log::error!("无法监听初始系统媒体会话：{error}");
             }
+            if let Some(activity_tracker) = &media_activity_tracker {
+                let current_session = manager.GetCurrentSession().ok();
+                activity_tracker.mark_current_session(current_session.as_ref());
+            }
         }
 
         Self {
@@ -334,6 +352,7 @@ impl SystemMediaManager {
             current_session_changed_token,
             current_session_observation,
             media_metadata_loader,
+            media_activity_tracker,
         }
     }
 
@@ -362,6 +381,14 @@ impl SystemMediaManager {
         collect_session_identities(manager)
     }
 
+    /// 返回全部媒体会话当前记录的有效活动时间和原因。
+    pub(crate) fn session_activities(&self) -> Result<Vec<MediaSessionActivity>, String> {
+        self.media_activity_tracker
+            .as_ref()
+            .ok_or_else(|| "媒体活动跟踪器尚未初始化".to_owned())?
+            .activities()
+    }
+
     /// 从内存缓存读取标题、歌手和封面，不在 Tauri 命令线程中等待 WinRT。
     pub(crate) fn current_media_metadata(&self) -> Result<Option<CurrentMediaMetadata>, String> {
         self.media_metadata_loader.cached()
@@ -369,11 +396,7 @@ impl SystemMediaManager {
 
     /// 读取 Windows 当前会话的播放状态；没有当前会话时返回空值。
     pub(crate) fn current_playback_status(&self) -> Result<Option<CurrentPlaybackStatus>, String> {
-        let manager = self
-            .manager
-            .as_ref()
-            .ok_or_else(|| "Windows 全局系统媒体管理器尚未初始化".to_owned())?;
-        let Some(session) = manager.GetCurrentSession().ok() else {
+        let Some(session) = self.observed_session()? else {
             return Ok(None);
         };
 
@@ -384,11 +407,7 @@ impl SystemMediaManager {
     pub(crate) fn current_playback_capabilities(
         &self,
     ) -> Result<Option<CurrentPlaybackCapabilities>, String> {
-        let manager = self
-            .manager
-            .as_ref()
-            .ok_or_else(|| "Windows 全局系统媒体管理器尚未初始化".to_owned())?;
-        let Some(session) = manager.GetCurrentSession().ok() else {
+        let Some(session) = self.observed_session()? else {
             return Ok(None);
         };
 
@@ -397,11 +416,7 @@ impl SystemMediaManager {
 
     /// 读取 Windows 当前会话的有效时间轴；没有会话或时间轴无效时返回空值。
     pub(crate) fn current_timeline(&self) -> Result<Option<CurrentTimeline>, String> {
-        let manager = self
-            .manager
-            .as_ref()
-            .ok_or_else(|| "Windows 全局系统媒体管理器尚未初始化".to_owned())?;
-        let Some(session) = manager.GetCurrentSession().ok() else {
+        let Some(session) = self.observed_session()? else {
             return Ok(None);
         };
 
@@ -410,11 +425,7 @@ impl SystemMediaManager {
 
     /// 将当前会话与后台缓存的元数据组合为统一快照。
     pub(crate) fn current_media_snapshot(&self) -> Result<Option<MediaSnapshot>, String> {
-        let manager = self
-            .manager
-            .as_ref()
-            .ok_or_else(|| "Windows 全局系统媒体管理器尚未初始化".to_owned())?;
-        let Some(session) = manager.GetCurrentSession().ok() else {
+        let Some(session) = self.observed_session()? else {
             return Ok(None);
         };
         let Some(metadata) = self.media_metadata_loader.cached()? else {
@@ -426,6 +437,47 @@ impl SystemMediaManager {
         }
 
         compose_media_snapshot(&session, metadata).map(Some)
+    }
+
+    /// 根据活动记录重新选择 Bar 实际观察的会话，并在目标变化时重新绑定事件。
+    pub(crate) fn refresh_selected_media_session<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+    ) -> Result<Option<SelectedMediaSession>, String> {
+        let manager = self
+            .manager
+            .as_ref()
+            .ok_or_else(|| "Windows 全局系统媒体管理器尚未初始化".to_owned())?;
+        let activity_tracker = self
+            .media_activity_tracker
+            .as_ref()
+            .ok_or_else(|| "媒体活动跟踪器尚未初始化".to_owned())?;
+        let windows_current_session = manager.GetCurrentSession().ok();
+        let (selected_session, selection) =
+            activity_tracker.select_session(windows_current_session)?;
+
+        let selected_key = selected_session.as_ref().map(session_key);
+        let observed_key = self.observed_session()?.as_ref().map(session_key);
+        if selected_key != observed_key {
+            bind_media_session(
+                selected_session,
+                app,
+                &self.current_session_observation,
+                &self.media_metadata_loader,
+            )?;
+        }
+
+        Ok(selection)
+    }
+
+    /// 返回 Bar 当前真正观察的会话，而不是 Windows 自行选出的 CurrentSession。
+    fn observed_session(
+        &self,
+    ) -> Result<Option<GlobalSystemMediaTransportControlsSession>, String> {
+        self.current_session_observation
+            .lock()
+            .map(|observation| observation.session.clone())
+            .map_err(|_| "当前媒体会话监听状态锁已损坏".to_owned())
     }
 }
 
@@ -455,6 +507,7 @@ impl Drop for SystemMediaManager {
 fn subscribe_to_sessions_changed<R: Runtime>(
     manager: &GlobalSystemMediaTransportControlsSessionManager,
     app: &AppHandle<R>,
+    media_activity_tracker: Option<MediaActivityTracker>,
 ) -> Result<i64, String> {
     let app = app.clone();
     // `TypedEventHandler::new` 无法从闭包体反推出两个 WinRT 泛型，
@@ -468,6 +521,12 @@ fn subscribe_to_sessions_changed<R: Runtime>(
             let Some(manager) = sender.as_ref() else {
                 return Ok(());
             };
+
+            if let Some(activity_tracker) = &media_activity_tracker {
+                if let Err(error) = activity_tracker.refresh_sessions(manager, &app) {
+                    log::warn!("媒体会话列表变化后刷新活动监听失败：{error}");
+                }
+            }
 
             match collect_session_identities(manager) {
                 Ok(identities) => {
@@ -503,6 +562,7 @@ fn subscribe_to_current_session_changed<R: Runtime>(
     app: &AppHandle<R>,
     observation: Arc<Mutex<CurrentSessionObservation>>,
     media_metadata_loader: Arc<MediaMetadataLoader>,
+    media_activity_tracker: Option<MediaActivityTracker>,
 ) -> Result<i64, String> {
     let app = app.clone();
     let handler: TypedEventHandler<
@@ -515,7 +575,10 @@ fn subscribe_to_current_session_changed<R: Runtime>(
                 return Ok(());
             };
 
-            if let Err(error) =
+            if let Some(activity_tracker) = &media_activity_tracker {
+                let current_session = manager.GetCurrentSession().ok();
+                activity_tracker.mark_current_session(current_session.as_ref());
+            } else if let Err(error) =
                 bind_current_session(manager, &app, &observation, &media_metadata_loader)
             {
                 log::warn!("切换 Windows 当前媒体会话监听失败：{error}");
@@ -540,6 +603,16 @@ fn bind_current_session<R: Runtime>(
     media_metadata_loader: &Arc<MediaMetadataLoader>,
 ) -> Result<(), String> {
     let current_session = manager.GetCurrentSession().ok();
+    bind_media_session(current_session, app, observation, media_metadata_loader)
+}
+
+/// 注销旧会话并绑定选择器指定的媒体会话。
+fn bind_media_session<R: Runtime>(
+    current_session: Option<GlobalSystemMediaTransportControlsSession>,
+    app: &AppHandle<R>,
+    observation: &Arc<Mutex<CurrentSessionObservation>>,
+    media_metadata_loader: &Arc<MediaMetadataLoader>,
+) -> Result<(), String> {
     let mut observation = observation
         .lock()
         .map_err(|_| "当前媒体会话监听状态锁已损坏".to_owned())?;
@@ -801,6 +874,7 @@ fn compose_media_snapshot(
     let timeline = read_timeline(session)?;
 
     Ok(MediaSnapshot {
+        session_key: session_key(session),
         player_kind: identify_media_player(&metadata.source_app_id),
         source_app_id: metadata.source_app_id,
         title: metadata.title,
@@ -1211,6 +1285,7 @@ fn collect_session_identities(
             .map_err(|error| format!("无法读取第 {} 个会话的 Source App ID：{error}", index + 1))?;
         let source_app_id = source_app_id.to_string();
         identities.push(MediaSessionIdentity {
+            session_key: session_key(&session),
             player_kind: identify_media_player(&source_app_id),
             source_app_id,
         });
@@ -1220,7 +1295,7 @@ fn collect_session_identities(
 }
 
 /// 根据 Source App ID 中稳定的品牌或可执行文件标识识别四个目标播放器。
-fn identify_media_player(source_app_id: &str) -> MediaPlayerKind {
+pub(crate) fn identify_media_player(source_app_id: &str) -> MediaPlayerKind {
     let normalized = source_app_id.to_ascii_lowercase();
 
     if normalized.contains("qqmusic") {

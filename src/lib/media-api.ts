@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 const MEDIA_SESSIONS_CHANGED_EVENT = 'media-sessions-changed'
 const MEDIA_SESSION_IDENTITIES_CHANGED_EVENT = 'media-session-identities-changed'
+const MEDIA_SESSION_ACTIVITIES_CHANGED_EVENT = 'media-session-activities-changed'
 const CURRENT_MEDIA_METADATA_CHANGED_EVENT = 'current-media-metadata-changed'
 const CURRENT_PLAYBACK_STATUS_CHANGED_EVENT = 'current-playback-status-changed'
 const CURRENT_PLAYBACK_CAPABILITIES_CHANGED_EVENT = 'current-playback-capabilities-changed'
@@ -26,8 +27,40 @@ export type MediaPlayerKind =
   | 'other'
 
 export interface MediaSessionIdentity {
+  sessionKey: number
   sourceAppId: string
   playerKind: MediaPlayerKind
+}
+
+export type MediaActivityReason =
+  | 'detectedPlaying'
+  | 'playbackStarted'
+  | 'trackChanged'
+  | 'becameCurrent'
+
+export interface MediaSessionActivity {
+  sessionKey: number
+  sourceAppId: string
+  playerKind: MediaPlayerKind
+  title: string | null
+  artist: string | null
+  isPlaying: boolean
+  isPaused: boolean
+  lastActivityAtUnixMs: number | null
+  activitySequence: number | null
+  lastActivityReason: MediaActivityReason | null
+}
+
+export type MediaSelectionReason =
+  | 'playingPreferred'
+  | 'lastPausedPreferred'
+  | 'windowsCurrentFallback'
+
+export interface SelectedMediaSession {
+  sessionKey: number
+  sourceAppId: string
+  playerKind: MediaPlayerKind
+  reason: MediaSelectionReason
 }
 
 export interface CurrentMediaMetadata {
@@ -57,6 +90,7 @@ export interface CurrentTimeline {
 }
 
 export interface MediaSnapshot {
+  sessionKey: number
   sourceAppId: string
   playerKind: MediaPlayerKind
   title: string
@@ -90,6 +124,25 @@ export function listenToMediaSessionIdentityChanges(
   return listen<MediaSessionIdentity[]>(MEDIA_SESSION_IDENTITIES_CHANGED_EVENT, (event) => {
     handleIdentities(event.payload)
   })
+}
+
+/** 读取全部媒体会话最近一次有效活动的诊断状态。 */
+export function getMediaSessionActivities(): Promise<MediaSessionActivity[]> {
+  return invoke<MediaSessionActivity[]>('get_media_session_activities')
+}
+
+/** 订阅播放开始、切歌或 CurrentSession 变化产生的活动记录。 */
+export function listenToMediaSessionActivityChanges(
+  handleActivities: (activities: MediaSessionActivity[]) => void,
+): Promise<UnlistenFn> {
+  return listen<MediaSessionActivity[]>(MEDIA_SESSION_ACTIVITIES_CHANGED_EVENT, (event) => {
+    handleActivities(event.payload)
+  })
+}
+
+/** 要求 Rust 按活动记录重新选择 Bar 实际观察的媒体会话。 */
+export function refreshSelectedMediaSession(): Promise<SelectedMediaSession | null> {
+  return invoke<SelectedMediaSession | null>('refresh_selected_media_session')
 }
 
 /** 订阅系统媒体会话列表变化，并返回用于取消订阅的函数。 */

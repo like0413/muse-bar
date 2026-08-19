@@ -6,10 +6,14 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import {
   getCurrentMediaSnapshot,
   getMediaSessionIdentities,
+  getMediaSessionActivities,
   listenToCurrentMediaSnapshotChanges,
   listenToCurrentTimelineChanges,
   listenToMediaSessionIdentityChanges,
+  listenToMediaSessionActivityChanges,
+  type MediaActivityReason,
   type MediaPlayerKind,
+  type MediaSessionActivity,
   type MediaSessionIdentity,
   type MediaSnapshot,
 } from '@/lib/media-api'
@@ -34,9 +38,11 @@ const isSavingSettings = ref(false)
 const mediaSnapshot = ref<MediaSnapshot | null>(null)
 const mediaSnapshotError = ref<string>()
 const mediaSessionIdentities = ref<MediaSessionIdentity[]>([])
+const mediaSessionActivities = ref<MediaSessionActivity[]>([])
 let stopMediaSnapshotListener: UnlistenFn | undefined
 let stopTimelineListener: UnlistenFn | undefined
 let stopMediaSessionIdentityListener: UnlistenFn | undefined
+let stopMediaSessionActivityListener: UnlistenFn | undefined
 let hasUnmounted = false
 
 const currentPosition = computed(() => readTaskbarPosition(settings.value))
@@ -61,6 +67,13 @@ const playerKindLabels: Record<MediaPlayerKind, string> = {
   kugouMusic: '酷狗音乐',
   qishuiMusic: '汽水音乐',
   other: '普通系统媒体',
+}
+
+const activityReasonLabels: Record<MediaActivityReason, string> = {
+  detectedPlaying: '启动时已在播放',
+  playbackStarted: '开始播放',
+  trackChanged: '切歌',
+  becameCurrent: '成为系统当前会话',
 }
 
 /** 序列化诊断快照，但不把可能很长的封面 base64 正文插入页面 DOM。 */
@@ -188,11 +201,30 @@ async function startMediaSessionIdentityListener(): Promise<void> {
   }
 }
 
+/** 订阅所有会话的活动记录，用递增序号直观验证时间轴更新不会抢占活跃度。 */
+async function startMediaSessionActivityListener(): Promise<void> {
+  try {
+    const stopListener = await listenToMediaSessionActivityChanges((activities) => {
+      mediaSessionActivities.value = activities
+    })
+    if (hasUnmounted) {
+      stopListener()
+      return
+    }
+
+    stopMediaSessionActivityListener = stopListener
+    mediaSessionActivities.value = await getMediaSessionActivities()
+  } catch (error) {
+    mediaSnapshotError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
 onMounted(() => {
   void loadRuntimeInfo()
   void loadSettings()
   void startMediaSnapshotListener()
   void startMediaSessionIdentityListener()
+  void startMediaSessionActivityListener()
 })
 
 onBeforeUnmount(() => {
@@ -200,6 +232,7 @@ onBeforeUnmount(() => {
   stopMediaSnapshotListener?.()
   stopTimelineListener?.()
   stopMediaSessionIdentityListener?.()
+  stopMediaSessionActivityListener?.()
 })
 </script>
 
@@ -291,6 +324,44 @@ onBeforeUnmount(() => {
           <code class="text-muted-foreground ml-2 break-all">{{ identity.sourceAppId }}</code>
         </li>
       </ul>
+      <h3 class="mt-2 font-medium">播放器活动记录</h3>
+      <p v-if="mediaSessionActivities.length === 0" class="text-muted-foreground text-sm">
+        暂无活动记录
+      </p>
+      <dl v-else class="flex flex-col gap-2 text-sm">
+        <div
+          v-for="activity in mediaSessionActivities"
+          :key="activity.sessionKey"
+          class="bg-muted grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md border px-3 py-2"
+        >
+          <dt class="text-muted-foreground">播放器</dt>
+          <dd>{{ playerKindLabels[activity.playerKind] }} · {{ activity.sourceAppId }}</dd>
+          <dt class="text-muted-foreground">曲目</dt>
+          <dd>{{ activity.title || '未知标题' }} · {{ activity.artist || '未知歌手' }}</dd>
+          <dt class="text-muted-foreground">播放</dt>
+          <dd>
+            {{ activity.isPlaying ? '播放中' : activity.isPaused ? '已暂停' : '其他状态' }}
+          </dd>
+          <dt class="text-muted-foreground">活动序号</dt>
+          <dd>{{ activity.activitySequence ?? '尚无' }}</dd>
+          <dt class="text-muted-foreground">活动原因</dt>
+          <dd>
+            {{
+              activity.lastActivityReason
+                ? activityReasonLabels[activity.lastActivityReason]
+                : '尚无'
+            }}
+          </dd>
+          <dt class="text-muted-foreground">活动时间</dt>
+          <dd>
+            {{
+              activity.lastActivityAtUnixMs
+                ? new Date(activity.lastActivityAtUnixMs).toLocaleString()
+                : '尚无'
+            }}
+          </dd>
+        </div>
+      </dl>
     </section>
   </main>
 </template>

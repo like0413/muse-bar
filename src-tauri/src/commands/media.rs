@@ -1,5 +1,6 @@
-use tauri::State;
+use tauri::{AppHandle, State};
 
+use crate::media_activity::{MediaSessionActivity, SelectedMediaSession};
 use crate::system_media::{
     CurrentMediaMetadata, CurrentPlaybackCapabilities, CurrentPlaybackStatus, CurrentTimeline,
     MediaSessionIdentity, MediaSnapshot, SystemMediaManager,
@@ -25,6 +26,23 @@ pub fn get_media_session_identities(
     state: State<'_, SystemMediaManager>,
 ) -> Result<Vec<MediaSessionIdentity>, String> {
     state.session_identities()
+}
+
+/// 返回全部会话最近一次有效活动的时间、顺序和原因。
+#[tauri::command]
+pub fn get_media_session_activities(
+    state: State<'_, SystemMediaManager>,
+) -> Result<Vec<MediaSessionActivity>, String> {
+    state.session_activities()
+}
+
+/// 根据最近有效活动重新选择 Bar 观察的会话。
+#[tauri::command]
+pub fn refresh_selected_media_session(
+    app: AppHandle,
+    state: State<'_, SystemMediaManager>,
+) -> Result<Option<SelectedMediaSession>, String> {
+    state.refresh_selected_media_session(&app)
 }
 
 /// 从后台缓存返回 Windows 当前媒体会话的标题、歌手和封面。

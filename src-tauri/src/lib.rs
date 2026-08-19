@@ -9,6 +9,9 @@ mod commands;
 /// Explorer 生命周期与任务栏重建消息监听。
 mod explorer_monitor;
 
+/// 所有媒体会话的有效活动时间跟踪。
+mod media_activity;
+
 /// 与操作系统交互的条件编译边界。
 mod platform;
 
@@ -58,7 +61,9 @@ pub fn run() {
             commands::media::get_current_timeline,
             commands::media::get_media_session_source_app_ids,
             commands::media::get_media_session_identities,
+            commands::media::get_media_session_activities,
             commands::media::is_system_media_manager_initialized,
+            commands::media::refresh_selected_media_session,
             commands::runtime::get_runtime_info,
             commands::settings::get_settings,
             commands::settings::update_settings
