@@ -3,6 +3,9 @@ use tauri::Manager;
 /// 前端可调用的 Tauri 命令。
 pub mod commands;
 
+/// 与操作系统交互的条件编译边界。
+pub mod platform;
+
 /// 用户设置的数据结构与默认值。
 pub mod settings;
 

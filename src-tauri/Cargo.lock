@@ -1873,6 +1873,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-log",
+ "windows",
 ]
 
 [[package]]
