@@ -29,6 +29,7 @@ const CURRENT_MEDIA_METADATA_CHANGED_EVENT: &str = "current-media-metadata-chang
 const CURRENT_PLAYBACK_STATUS_CHANGED_EVENT: &str = "current-playback-status-changed";
 const CURRENT_PLAYBACK_CAPABILITIES_CHANGED_EVENT: &str = "current-playback-capabilities-changed";
 const CURRENT_TIMELINE_CHANGED_EVENT: &str = "current-timeline-changed";
+const CURRENT_MEDIA_SNAPSHOT_CHANGED_EVENT: &str = "current-media-snapshot-changed";
 const MAX_ARTWORK_BYTES: u64 = 4 * 1024 * 1024;
 const DEFAULT_WINDOWS_ACCENT_COLOR: &str = "#0078D4";
 
@@ -93,6 +94,20 @@ pub(crate) struct CurrentTimeline {
     max_seek_ms: i64,
     last_updated_at_unix_ms: i64,
     playback_rate: Option<f64>,
+}
+
+/// 前端消费的统一媒体快照，汇总当前会话的显示信息、状态、能力和时间轴。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MediaSnapshot {
+    source_app_id: String,
+    title: String,
+    artist: String,
+    artwork_data_url: Option<String>,
+    accent_color: String,
+    playback_status: CurrentPlaybackStatus,
+    capabilities: CurrentPlaybackCapabilities,
+    timeline: Option<CurrentTimeline>,
 }
 
 /// 保存当前会话以及注销其元数据事件所需的 token。
@@ -211,9 +226,12 @@ fn run_media_metadata_worker<R: Runtime>(
                     continue;
                 }
 
-                if let Err(error) = app.emit(CURRENT_MEDIA_METADATA_CHANGED_EVENT, Some(metadata)) {
+                if let Err(error) =
+                    app.emit(CURRENT_MEDIA_METADATA_CHANGED_EVENT, Some(metadata.clone()))
+                {
                     log::warn!("无法广播当前媒体会话元数据：{error}");
                 }
+                emit_media_snapshot(&request.session, &app, metadata);
             }
             Err(error) => {
                 if let Ok(mut cached) = cached.lock() {
@@ -224,6 +242,12 @@ fn run_media_metadata_worker<R: Runtime>(
                     Option::<CurrentMediaMetadata>::None,
                 ) {
                     log::warn!("无法广播媒体元数据读取失败：{emit_error}");
+                }
+                if let Err(emit_error) = app.emit(
+                    CURRENT_MEDIA_SNAPSHOT_CHANGED_EVENT,
+                    Option::<MediaSnapshot>::None,
+                ) {
+                    log::warn!("无法广播媒体快照读取失败：{emit_error}");
                 }
                 log::warn!("无法异步读取当前媒体元数据：{error}");
             }
@@ -347,6 +371,26 @@ impl SystemMediaManager {
         };
 
         read_timeline(&session)
+    }
+
+    /// 将当前会话与后台缓存的元数据组合为统一快照。
+    pub(crate) fn current_media_snapshot(&self) -> Result<Option<MediaSnapshot>, String> {
+        let manager = self
+            .manager
+            .as_ref()
+            .ok_or_else(|| "Windows 全局系统媒体管理器尚未初始化".to_owned())?;
+        let Some(session) = manager.GetCurrentSession().ok() else {
+            return Ok(None);
+        };
+        let Some(metadata) = self.media_metadata_loader.cached()? else {
+            return Ok(None);
+        };
+
+        if !metadata_belongs_to_session(&metadata, &session)? {
+            return Ok(None);
+        }
+
+        compose_media_snapshot(&session, metadata).map(Some)
     }
 }
 
@@ -480,6 +524,11 @@ fn bind_current_session<R: Runtime>(
             Option::<CurrentTimeline>::None,
         )
         .map_err(|error| format!("无法广播当前时间轴已清空：{error}"))?;
+        app.emit(
+            CURRENT_MEDIA_SNAPSHOT_CHANGED_EVENT,
+            Option::<MediaSnapshot>::None,
+        )
+        .map_err(|error| format!("无法广播当前媒体快照已清空：{error}"))?;
         return Ok(());
     };
 
@@ -503,6 +552,7 @@ fn bind_current_session<R: Runtime>(
         .map_err(|error| format!("无法订阅当前媒体会话元数据变化：{error}"))?;
 
     let playback_app = app.clone();
+    let playback_metadata_loader = Arc::clone(media_metadata_loader);
     let playback_handler: TypedEventHandler<
         GlobalSystemMediaTransportControlsSession,
         PlaybackInfoChangedEventArgs,
@@ -515,6 +565,7 @@ fn bind_current_session<R: Runtime>(
 
             emit_playback_info(session, &playback_app);
             emit_timeline(session, &playback_app);
+            emit_media_snapshot_from_cache(session, &playback_app, &playback_metadata_loader);
             Ok(())
         },
     );
@@ -643,6 +694,79 @@ fn emit_timeline<R: Runtime>(
         }
         Err(error) => log::warn!("无法在时间轴变化后读取快照：{error}"),
     }
+}
+
+/// 使用指定元数据构建并广播统一快照；单项读取失败不会影响原有分项事件。
+fn emit_media_snapshot<R: Runtime>(
+    session: &GlobalSystemMediaTransportControlsSession,
+    app: &AppHandle<R>,
+    metadata: CurrentMediaMetadata,
+) {
+    match compose_media_snapshot(session, metadata) {
+        Ok(snapshot) => {
+            if let Err(error) = app.emit(CURRENT_MEDIA_SNAPSHOT_CHANGED_EVENT, Some(snapshot)) {
+                log::warn!("无法广播当前媒体统一快照：{error}");
+            }
+        }
+        Err(error) => log::warn!("无法组装当前媒体统一快照：{error}"),
+    }
+}
+
+/// 从后台元数据缓存构建统一快照，缓存仍属于旧会话时跳过本次广播。
+fn emit_media_snapshot_from_cache<R: Runtime>(
+    session: &GlobalSystemMediaTransportControlsSession,
+    app: &AppHandle<R>,
+    media_metadata_loader: &MediaMetadataLoader,
+) {
+    let metadata = match media_metadata_loader.cached() {
+        Ok(Some(metadata)) => metadata,
+        Ok(None) => return,
+        Err(error) => {
+            log::warn!("无法读取媒体元数据缓存以组装快照：{error}");
+            return;
+        }
+    };
+
+    match metadata_belongs_to_session(&metadata, session) {
+        Ok(true) => emit_media_snapshot(session, app, metadata),
+        Ok(false) => {}
+        Err(error) => log::warn!("无法确认媒体快照所属会话：{error}"),
+    }
+}
+
+/// 检查缓存元数据是否仍属于指定会话，避免切换播放器时组合出交叉数据。
+fn metadata_belongs_to_session(
+    metadata: &CurrentMediaMetadata,
+    session: &GlobalSystemMediaTransportControlsSession,
+) -> Result<bool, String> {
+    let source_app_id = session
+        .SourceAppUserModelId()
+        .map_err(|error| format!("无法核对媒体快照的 Source App ID：{error}"))?;
+    Ok(metadata.source_app_id == source_app_id)
+}
+
+/// 从同一会话读取播放状态、能力和时间轴，并与元数据合并。
+fn compose_media_snapshot(
+    session: &GlobalSystemMediaTransportControlsSession,
+    metadata: CurrentMediaMetadata,
+) -> Result<MediaSnapshot, String> {
+    let playback_info = session
+        .GetPlaybackInfo()
+        .map_err(|error| format!("无法为媒体快照读取播放信息：{error}"))?;
+    let playback_status = playback_status_from_info(&playback_info)?;
+    let capabilities = playback_capabilities_from_info(&playback_info)?;
+    let timeline = read_timeline(session)?;
+
+    Ok(MediaSnapshot {
+        source_app_id: metadata.source_app_id,
+        title: metadata.title,
+        artist: metadata.artist,
+        artwork_data_url: metadata.artwork_data_url,
+        accent_color: metadata.accent_color,
+        playback_status,
+        capabilities,
+        timeline,
+    })
 }
 
 /// 一次取得 WinRT 媒体属性，并从同一份属性中提取标题、歌手和封面。

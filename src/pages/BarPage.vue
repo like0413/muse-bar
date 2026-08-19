@@ -16,6 +16,7 @@ import {
   type CurrentPlaybackStatus,
   type CurrentTimeline,
 } from '@/lib/media-api'
+import { openSettingsWindow } from '@/lib/settings-window'
 
 const mediaMetadataStatus = ref('正在读取媒体信息')
 const mediaMetadataDetails = ref('')
@@ -26,6 +27,7 @@ const playbackStatusText = ref('')
 const playbackCapabilitiesText = ref('')
 const timelineText = ref('')
 const timelineDetails = ref('')
+const settingsWindowError = ref('')
 let stopMediaMetadataListener: UnlistenFn | undefined
 let stopPlaybackCapabilitiesListener: UnlistenFn | undefined
 let stopPlaybackStatusListener: UnlistenFn | undefined
@@ -48,6 +50,7 @@ const barSummary = computed(() =>
     mediaMetadataStatus.value,
     timelineText.value,
     playbackCapabilitiesText.value,
+    settingsWindowError.value,
   ]
     .filter(Boolean)
     .join(' · '),
@@ -85,6 +88,18 @@ function showCurrentMediaMetadata(metadata: CurrentMediaMetadata | null) {
 /** 记录 WebView 封面解码失败，并保留固定占位区域供用户识别。 */
 function showArtworkFallback() {
   artworkDecodeFailed.value = true
+}
+
+/** 响应 Bar 右键操作，打开已有设置窗口或创建一个新的设置窗口。 */
+async function handleOpenSettings(): Promise<void> {
+  settingsWindowError.value = ''
+
+  try {
+    await openSettingsWindow()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    settingsWindowError.value = `设置页打开失败：${message}`
+  }
 }
 
 /** 将 Windows 播放状态转换为当前验证页面使用的中文文本。 */
@@ -265,6 +280,7 @@ onBeforeUnmount(() => {
     <section
       aria-label="Muse Bar"
       class="bg-secondary text-secondary-foreground relative flex h-full w-full items-center gap-2 overflow-hidden rounded-md border px-2 text-sm font-medium"
+      @contextmenu.prevent="handleOpenSettings"
     >
       <div
         v-if="artworkDataUrl"

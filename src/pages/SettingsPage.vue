@@ -1,7 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import type { UnlistenFn } from '@tauri-apps/api/event'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import {
+  getCurrentMediaSnapshot,
+  listenToCurrentMediaSnapshotChanges,
+  listenToCurrentTimelineChanges,
+  type MediaSnapshot,
+} from '@/lib/media-api'
 import { getRuntimeInfo } from '@/lib/runtime-info'
 import {
   getSettings,
@@ -20,9 +27,15 @@ const runtimeError = ref<string>()
 const settings = ref<SettingsPayload>()
 const settingsError = ref<string>()
 const isSavingSettings = ref(false)
+const mediaSnapshot = ref<MediaSnapshot | null>(null)
+const mediaSnapshotError = ref<string>()
+let stopMediaSnapshotListener: UnlistenFn | undefined
+let stopTimelineListener: UnlistenFn | undefined
+let hasUnmounted = false
 
 const currentPosition = computed(() => readTaskbarPosition(settings.value))
 const currentColorMode = computed(() => readColorMode(settings.value))
+const mediaSnapshotJson = computed(() => serializeMediaSnapshot(mediaSnapshot.value))
 
 const positionOptions = [
   { value: 'left', label: '靠左' },
@@ -35,6 +48,17 @@ const colorModeOptions: ReadonlyArray<{ value: ColorMode; label: string }> = [
   { value: 'dark', label: '深色' },
   { value: 'light', label: '浅色' },
 ]
+
+/** 序列化诊断快照，但不把可能很长的封面 base64 正文插入页面 DOM。 */
+function serializeMediaSnapshot(snapshot: MediaSnapshot | null): string {
+  if (!snapshot) return 'null'
+
+  const artworkSummary = snapshot.artworkDataUrl
+    ? `${snapshot.artworkDataUrl.slice(0, snapshot.artworkDataUrl.indexOf(',') + 1)}<已省略，共 ${snapshot.artworkDataUrl.length} 字符>`
+    : null
+
+  return JSON.stringify({ ...snapshot, artworkDataUrl: artworkSummary }, null, 2)
+}
 
 /** 将 Rust 返回的 Unix 毫秒时间戳转换为本地可读时间。 */
 function formatStartedAt(startedAtUnixMs: number): string {
@@ -103,9 +127,45 @@ async function handleColorModeChange(colorMode: unknown): Promise<void> {
   }
 }
 
+/** 订阅统一媒体事件并读取初始快照，供当前诊断页面直接检查 JSON。 */
+async function startMediaSnapshotListener(): Promise<void> {
+  try {
+    const stopListener = await listenToCurrentMediaSnapshotChanges((snapshot) => {
+      mediaSnapshot.value = snapshot
+      mediaSnapshotError.value = undefined
+    })
+    if (hasUnmounted) {
+      stopListener()
+      return
+    }
+
+    stopMediaSnapshotListener = stopListener
+    // 时间轴使用轻量事件局部更新，避免仅因位置变化就再次传输封面 data URL。
+    const stopTimeline = await listenToCurrentTimelineChanges((timeline) => {
+      if (mediaSnapshot.value) mediaSnapshot.value = { ...mediaSnapshot.value, timeline }
+    })
+    if (hasUnmounted) {
+      stopTimeline()
+      return
+    }
+
+    stopTimelineListener = stopTimeline
+    mediaSnapshot.value = await getCurrentMediaSnapshot()
+  } catch (error) {
+    mediaSnapshotError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
 onMounted(() => {
   void loadRuntimeInfo()
   void loadSettings()
+  void startMediaSnapshotListener()
+})
+
+onBeforeUnmount(() => {
+  hasUnmounted = true
+  stopMediaSnapshotListener?.()
+  stopTimelineListener?.()
 })
 </script>
 
@@ -173,6 +233,16 @@ onMounted(() => {
         </ToggleGroupItem>
       </ToggleGroup>
       <p class="text-muted-foreground text-sm">当前值：{{ currentColorMode }}</p>
+    </section>
+    <section aria-labelledby="media-snapshot-heading" class="mt-4 flex flex-col gap-2">
+      <h2 id="media-snapshot-heading" class="text-lg font-medium">MediaSnapshot</h2>
+      <p v-if="mediaSnapshotError" role="alert" class="text-destructive text-sm">
+        {{ mediaSnapshotError }}
+      </p>
+      <pre
+        v-else
+        class="bg-muted max-h-72 overflow-auto rounded-md border p-3 text-xs whitespace-pre-wrap"
+        >{{ mediaSnapshotJson }}</pre>
     </section>
   </main>
 </template>

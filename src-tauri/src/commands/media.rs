@@ -2,7 +2,7 @@ use tauri::State;
 
 use crate::system_media::{
     CurrentMediaMetadata, CurrentPlaybackCapabilities, CurrentPlaybackStatus, CurrentTimeline,
-    SystemMediaManager,
+    MediaSnapshot, SystemMediaManager,
 };
 
 /// 返回进程级 Windows 全局系统媒体管理器是否初始化成功。
@@ -49,4 +49,12 @@ pub fn get_current_timeline(
     state: State<'_, SystemMediaManager>,
 ) -> Result<Option<CurrentTimeline>, String> {
     state.current_timeline()
+}
+
+/// 返回当前会话各项数据组成的统一媒体快照。
+#[tauri::command]
+pub fn get_current_media_snapshot(
+    state: State<'_, SystemMediaManager>,
+) -> Result<Option<MediaSnapshot>, String> {
+    state.current_media_snapshot()
 }

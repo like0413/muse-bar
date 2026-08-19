@@ -6,6 +6,7 @@ const CURRENT_MEDIA_METADATA_CHANGED_EVENT = 'current-media-metadata-changed'
 const CURRENT_PLAYBACK_STATUS_CHANGED_EVENT = 'current-playback-status-changed'
 const CURRENT_PLAYBACK_CAPABILITIES_CHANGED_EVENT = 'current-playback-capabilities-changed'
 const CURRENT_TIMELINE_CHANGED_EVENT = 'current-timeline-changed'
+const CURRENT_MEDIA_SNAPSHOT_CHANGED_EVENT = 'current-media-snapshot-changed'
 
 export type CurrentPlaybackStatus =
   | 'closed'
@@ -40,6 +41,17 @@ export interface CurrentTimeline {
   maxSeekMs: number
   lastUpdatedAtUnixMs: number
   playbackRate: number | null
+}
+
+export interface MediaSnapshot {
+  sourceAppId: string
+  title: string
+  artist: string
+  artworkDataUrl: string | null
+  accentColor: string
+  playbackStatus: CurrentPlaybackStatus
+  capabilities: CurrentPlaybackCapabilities
+  timeline: CurrentTimeline | null
 }
 
 /** 查询 Rust 进程是否已经取得 Windows 全局系统媒体管理器。 */
@@ -117,5 +129,19 @@ export function listenToCurrentTimelineChanges(
 ): Promise<UnlistenFn> {
   return listen<CurrentTimeline | null>(CURRENT_TIMELINE_CHANGED_EVENT, (event) => {
     handleTimeline(event.payload)
+  })
+}
+
+/** 从 Rust 读取当前会话各项数据组成的统一媒体快照。 */
+export function getCurrentMediaSnapshot(): Promise<MediaSnapshot | null> {
+  return invoke<MediaSnapshot | null>('get_current_media_snapshot')
+}
+
+/** 订阅当前媒体统一快照，供后续 Store 使用单一事件更新状态。 */
+export function listenToCurrentMediaSnapshotChanges(
+  handleSnapshot: (snapshot: MediaSnapshot | null) => void,
+): Promise<UnlistenFn> {
+  return listen<MediaSnapshot | null>(CURRENT_MEDIA_SNAPSHOT_CHANGED_EVENT, (event) => {
+    handleSnapshot(event.payload)
   })
 }
