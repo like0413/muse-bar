@@ -8,13 +8,16 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionManager,
     GlobalSystemMediaTransportControlsSessionPlaybackInfo,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus, MediaPropertiesChangedEventArgs,
-    PlaybackInfoChangedEventArgs, SessionsChangedEventArgs,
+    PlaybackInfoChangedEventArgs, SessionsChangedEventArgs, TimelinePropertiesChangedEventArgs,
 };
 
+const TICKS_PER_MILLISECOND: i64 = 10_000;
+const WINDOWS_TO_UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
 const MEDIA_SESSIONS_CHANGED_EVENT: &str = "media-sessions-changed";
 const CURRENT_MEDIA_METADATA_CHANGED_EVENT: &str = "current-media-metadata-changed";
 const CURRENT_PLAYBACK_STATUS_CHANGED_EVENT: &str = "current-playback-status-changed";
 const CURRENT_PLAYBACK_CAPABILITIES_CHANGED_EVENT: &str = "current-playback-capabilities-changed";
+const CURRENT_TIMELINE_CHANGED_EVENT: &str = "current-timeline-changed";
 
 /// 当前 Windows 系统会话可提供的基础文本元数据。
 #[derive(Debug, Clone, Serialize)]
@@ -49,12 +52,26 @@ pub(crate) struct CurrentPlaybackCapabilities {
     can_seek: bool,
 }
 
+/// Windows 当前媒体会话上报的有效时间轴快照。
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CurrentTimeline {
+    start_ms: i64,
+    end_ms: i64,
+    position_ms: i64,
+    min_seek_ms: i64,
+    max_seek_ms: i64,
+    last_updated_at_unix_ms: i64,
+    playback_rate: Option<f64>,
+}
+
 /// 保存当前会话以及注销其元数据事件所需的 token。
 #[derive(Default)]
 struct CurrentSessionObservation {
     session: Option<GlobalSystemMediaTransportControlsSession>,
     media_properties_changed_token: Option<i64>,
     playback_info_changed_token: Option<i64>,
+    timeline_properties_changed_token: Option<i64>,
 }
 
 /// 保存整个应用进程唯一的 Windows 全局系统媒体管理器。
@@ -156,6 +173,19 @@ impl SystemMediaManager {
         };
 
         read_playback_capabilities(&session).map(Some)
+    }
+
+    /// 读取 Windows 当前会话的有效时间轴；没有会话或时间轴无效时返回空值。
+    pub(crate) fn current_timeline(&self) -> Result<Option<CurrentTimeline>, String> {
+        let manager = self
+            .manager
+            .as_ref()
+            .ok_or_else(|| "Windows 全局系统媒体管理器尚未初始化".to_owned())?;
+        let Some(session) = manager.GetCurrentSession().ok() else {
+            return Ok(None);
+        };
+
+        read_timeline(&session)
     }
 }
 
@@ -279,6 +309,11 @@ fn bind_current_session<R: Runtime>(
             Option::<CurrentPlaybackCapabilities>::None,
         )
         .map_err(|error| format!("无法广播当前控制能力已清空：{error}"))?;
+        app.emit(
+            CURRENT_TIMELINE_CHANGED_EVENT,
+            Option::<CurrentTimeline>::None,
+        )
+        .map_err(|error| format!("无法广播当前时间轴已清空：{error}"))?;
         return Ok(());
     };
 
@@ -313,6 +348,7 @@ fn bind_current_session<R: Runtime>(
             };
 
             emit_playback_info(session, &playback_app);
+            emit_timeline(session, &playback_app);
             Ok(())
         },
     );
@@ -324,13 +360,39 @@ fn bind_current_session<R: Runtime>(
         }
     };
 
+    let timeline_app = app.clone();
+    let timeline_handler: TypedEventHandler<
+        GlobalSystemMediaTransportControlsSession,
+        TimelinePropertiesChangedEventArgs,
+    > = TypedEventHandler::new(
+        move |sender: windows::core::Ref<'_, GlobalSystemMediaTransportControlsSession>,
+              _: windows::core::Ref<'_, TimelinePropertiesChangedEventArgs>| {
+            let Some(session) = sender.as_ref() else {
+                return Ok(());
+            };
+
+            emit_timeline(session, &timeline_app);
+            Ok(())
+        },
+    );
+    let timeline_token = match session.TimelinePropertiesChanged(&timeline_handler) {
+        Ok(token) => token,
+        Err(error) => {
+            let _ = session.RemoveMediaPropertiesChanged(token);
+            let _ = session.RemovePlaybackInfoChanged(playback_token);
+            return Err(format!("无法订阅当前媒体会话时间轴变化：{error}"));
+        }
+    };
+
     observation.session = Some(session.clone());
     observation.media_properties_changed_token = Some(token);
     observation.playback_info_changed_token = Some(playback_token);
+    observation.timeline_properties_changed_token = Some(timeline_token);
     drop(observation);
 
     emit_media_metadata(&session, app);
     emit_playback_info(&session, app);
+    emit_timeline(&session, app);
     Ok(())
 }
 
@@ -346,6 +408,14 @@ fn clear_current_session_observation(observation: &mut CurrentSessionObservation
     }
     if let (Some(session), Some(token)) = (
         &observation.session,
+        observation.timeline_properties_changed_token,
+    ) {
+        if let Err(error) = session.RemoveTimelinePropertiesChanged(token) {
+            log::warn!("无法注销当前媒体会话时间轴监听：{error}");
+        }
+    }
+    if let (Some(session), Some(token)) = (
+        &observation.session,
         observation.playback_info_changed_token,
     ) {
         if let Err(error) = session.RemovePlaybackInfoChanged(token) {
@@ -356,6 +426,7 @@ fn clear_current_session_observation(observation: &mut CurrentSessionObservation
     observation.session = None;
     observation.media_properties_changed_token = None;
     observation.playback_info_changed_token = None;
+    observation.timeline_properties_changed_token = None;
 }
 
 /// 读取会话文本元数据并广播；事件回调中的读取失败只记录日志。
@@ -405,6 +476,21 @@ fn emit_playback_info<R: Runtime>(
             }
         }
         Err(error) => log::warn!("无法在播放信息变化后读取控制能力：{error}"),
+    }
+}
+
+/// 读取当前会话时间轴并广播；无效时间轴使用空值表示。
+fn emit_timeline<R: Runtime>(
+    session: &GlobalSystemMediaTransportControlsSession,
+    app: &AppHandle<R>,
+) {
+    match read_timeline(session) {
+        Ok(timeline) => {
+            if let Err(error) = app.emit(CURRENT_TIMELINE_CHANGED_EVENT, timeline) {
+                log::warn!("无法广播当前媒体会话时间轴：{error}");
+            }
+        }
+        Err(error) => log::warn!("无法在时间轴变化后读取快照：{error}"),
     }
 }
 
@@ -507,6 +593,71 @@ fn playback_capabilities_from_info(
             .IsPlaybackPositionEnabled()
             .map_err(|error| format!("无法读取 seek 能力：{error}"))?,
     })
+}
+
+/// 读取并校验当前会话时间轴，将 Windows ticks 转换为毫秒。
+fn read_timeline(
+    session: &GlobalSystemMediaTransportControlsSession,
+) -> Result<Option<CurrentTimeline>, String> {
+    let timeline = session
+        .GetTimelineProperties()
+        .map_err(|error| format!("无法读取当前会话时间轴：{error}"))?;
+    let start_ticks = timeline
+        .StartTime()
+        .map_err(|error| format!("无法读取时间轴开始时间：{error}"))?
+        .Duration;
+    let end_ticks = timeline
+        .EndTime()
+        .map_err(|error| format!("无法读取时间轴结束时间：{error}"))?
+        .Duration;
+
+    // 直播、尚未开始播放或未实现时间轴的播放器通常返回相同的起止值。
+    // 这类数据无法计算有效进度，因此明确返回空值。
+    if end_ticks <= start_ticks {
+        return Ok(None);
+    }
+
+    let position_ticks = timeline
+        .Position()
+        .map_err(|error| format!("无法读取时间轴当前位置：{error}"))?
+        .Duration;
+    let min_seek_ticks = timeline
+        .MinSeekTime()
+        .map_err(|error| format!("无法读取时间轴最小 seek 位置：{error}"))?
+        .Duration;
+    let max_seek_ticks = timeline
+        .MaxSeekTime()
+        .map_err(|error| format!("无法读取时间轴最大 seek 位置：{error}"))?
+        .Duration;
+    let last_updated_ticks = timeline
+        .LastUpdatedTime()
+        .map_err(|error| format!("无法读取时间轴最后更新时间：{error}"))?
+        .UniversalTime;
+    let last_updated_at_unix_ms = last_updated_ticks
+        .checked_sub(WINDOWS_TO_UNIX_EPOCH_TICKS)
+        .ok_or_else(|| "时间轴最后更新时间早于 Windows 时间原点".to_owned())?
+        / TICKS_PER_MILLISECOND;
+    let playback_rate = session
+        .GetPlaybackInfo()
+        .ok()
+        .and_then(|info| info.PlaybackRate().ok())
+        .and_then(|rate| rate.Value().ok())
+        .filter(|rate| rate.is_finite());
+
+    Ok(Some(CurrentTimeline {
+        start_ms: ticks_to_milliseconds(start_ticks),
+        end_ms: ticks_to_milliseconds(end_ticks),
+        position_ms: ticks_to_milliseconds(position_ticks),
+        min_seek_ms: ticks_to_milliseconds(min_seek_ticks),
+        max_seek_ms: ticks_to_milliseconds(max_seek_ticks),
+        last_updated_at_unix_ms,
+        playback_rate,
+    }))
+}
+
+/// 将 Windows TimeSpan 使用的 100ns ticks 转换为毫秒。
+fn ticks_to_milliseconds(ticks: i64) -> i64 {
+    ticks / TICKS_PER_MILLISECOND
 }
 
 /// 从指定管理器读取全部会话，并提取 Source App ID。

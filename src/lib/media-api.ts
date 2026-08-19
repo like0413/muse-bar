@@ -5,6 +5,7 @@ const MEDIA_SESSIONS_CHANGED_EVENT = 'media-sessions-changed'
 const CURRENT_MEDIA_METADATA_CHANGED_EVENT = 'current-media-metadata-changed'
 const CURRENT_PLAYBACK_STATUS_CHANGED_EVENT = 'current-playback-status-changed'
 const CURRENT_PLAYBACK_CAPABILITIES_CHANGED_EVENT = 'current-playback-capabilities-changed'
+const CURRENT_TIMELINE_CHANGED_EVENT = 'current-timeline-changed'
 
 export type CurrentPlaybackStatus =
   | 'closed'
@@ -27,6 +28,16 @@ export interface CurrentPlaybackCapabilities {
   canPrevious: boolean
   canNext: boolean
   canSeek: boolean
+}
+
+export interface CurrentTimeline {
+  startMs: number
+  endMs: number
+  positionMs: number
+  minSeekMs: number
+  maxSeekMs: number
+  lastUpdatedAtUnixMs: number
+  playbackRate: number | null
 }
 
 /** 查询 Rust 进程是否已经取得 Windows 全局系统媒体管理器。 */
@@ -91,4 +102,18 @@ export function listenToCurrentPlaybackCapabilitiesChanges(
       handleCapabilities(event.payload)
     },
   )
+}
+
+/** 读取 Windows 当前媒体会话上报的有效时间轴。 */
+export function getCurrentTimeline(): Promise<CurrentTimeline | null> {
+  return invoke<CurrentTimeline | null>('get_current_timeline')
+}
+
+/** 订阅 Windows 当前媒体会话时间轴变化。 */
+export function listenToCurrentTimelineChanges(
+  handleTimeline: (timeline: CurrentTimeline | null) => void,
+): Promise<UnlistenFn> {
+  return listen<CurrentTimeline | null>(CURRENT_TIMELINE_CHANGED_EVENT, (event) => {
+    handleTimeline(event.payload)
+  })
 }

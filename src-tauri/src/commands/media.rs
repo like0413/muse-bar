@@ -3,7 +3,8 @@ use tauri::State;
 
 #[cfg(target_os = "windows")]
 use crate::system_media::{
-    CurrentMediaMetadata, CurrentPlaybackCapabilities, CurrentPlaybackStatus, SystemMediaManager,
+    CurrentMediaMetadata, CurrentPlaybackCapabilities, CurrentPlaybackStatus, CurrentTimeline,
+    SystemMediaManager,
 };
 
 /// 返回进程级 Windows 全局系统媒体管理器是否初始化成功。
@@ -49,6 +50,15 @@ pub fn get_current_playback_capabilities(
     state.current_playback_capabilities()
 }
 
+/// 返回 Windows 当前媒体会话上报的有效时间轴。
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub fn get_current_timeline(
+    state: State<'_, SystemMediaManager>,
+) -> Result<Option<CurrentTimeline>, String> {
+    state.current_timeline()
+}
+
 /// 非 Windows 平台没有可用的 Windows 全局系统媒体管理器。
 #[cfg(not(target_os = "windows"))]
 #[tauri::command]
@@ -82,4 +92,11 @@ pub fn get_current_playback_status() -> Result<Option<()>, String> {
 #[tauri::command]
 pub fn get_current_playback_capabilities() -> Result<Option<()>, String> {
     Err("当前媒体控制能力仅支持 Windows".to_owned())
+}
+
+/// 非 Windows 平台没有可读取的 Windows 当前时间轴。
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+pub fn get_current_timeline() -> Result<Option<()>, String> {
+    Err("当前媒体时间轴仅支持 Windows".to_owned())
 }

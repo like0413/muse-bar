@@ -1,27 +1,39 @@
 <script setup lang="ts">
 import type { UnlistenFn } from '@tauri-apps/api/event'
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import {
   getCurrentMediaMetadata,
   getCurrentPlaybackCapabilities,
   getCurrentPlaybackStatus,
+  getCurrentTimeline,
   listenToCurrentMediaMetadataChanges,
   listenToCurrentPlaybackCapabilitiesChanges,
   listenToCurrentPlaybackStatusChanges,
+  listenToCurrentTimelineChanges,
   type CurrentMediaMetadata,
   type CurrentPlaybackCapabilities,
   type CurrentPlaybackStatus,
+  type CurrentTimeline,
 } from '@/lib/media-api'
 
 const mediaMetadataStatus = ref('正在读取媒体信息')
 const mediaMetadataDetails = ref('')
 const playbackStatusText = ref('状态读取中')
 const playbackCapabilitiesText = ref('能力读取中')
+const timelineText = ref('时间轴读取中')
+const timelineDetails = ref('')
 let stopMediaMetadataListener: UnlistenFn | undefined
 let stopPlaybackCapabilitiesListener: UnlistenFn | undefined
 let stopPlaybackStatusListener: UnlistenFn | undefined
+let stopTimelineListener: UnlistenFn | undefined
 let hasUnmounted = false
+
+const mediaDetails = computed(() =>
+  [mediaMetadataDetails.value, timelineDetails.value, `控制能力：${playbackCapabilitiesText.value}`]
+    .filter(Boolean)
+    .join('\n'),
+)
 
 const playbackStatusLabels: Record<CurrentPlaybackStatus, string> = {
   closed: '已关闭',
@@ -71,6 +83,34 @@ function showCurrentPlaybackCapabilities(capabilities: CurrentPlaybackCapabiliti
     : '无可用控制'
 }
 
+/** 将毫秒时长转换为不受本地化影响的 mm:ss 文本。 */
+function formatDuration(milliseconds: number) {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = String(totalSeconds % 60).padStart(2, '0')
+  return `${minutes}:${seconds}`
+}
+
+/** 将有效时间轴转换为当前位置、总时长和诊断文本。 */
+function showCurrentTimeline(timeline: CurrentTimeline | null) {
+  if (!timeline) {
+    timelineText.value = '无有效时间轴'
+    timelineDetails.value = timelineText.value
+    return
+  }
+
+  const elapsed = timeline.positionMs - timeline.startMs
+  const duration = timeline.endMs - timeline.startMs
+  const rate = timeline.playbackRate === null ? '速率未知' : `${timeline.playbackRate}x`
+  timelineText.value = `${formatDuration(elapsed)}/${formatDuration(duration)} · ${rate}`
+  timelineDetails.value = [
+    `位置：${timeline.positionMs} ms`,
+    `范围：${timeline.startMs}–${timeline.endMs} ms`,
+    `Seek：${timeline.minSeekMs}–${timeline.maxSeekMs} ms`,
+    `采样时间：${timeline.lastUpdatedAtUnixMs}`,
+  ].join('\n')
+}
+
 /** 从 Rust 主动读取一次 Windows 当前会话元数据。 */
 async function loadCurrentMediaMetadata() {
   try {
@@ -96,6 +136,16 @@ async function loadCurrentPlaybackCapabilities() {
     showCurrentPlaybackCapabilities(await getCurrentPlaybackCapabilities())
   } catch {
     playbackCapabilitiesText.value = '能力读取失败'
+  }
+}
+
+/** 从 Rust 主动读取一次 Windows 当前会话时间轴。 */
+async function loadCurrentTimeline() {
+  try {
+    showCurrentTimeline(await getCurrentTimeline())
+  } catch {
+    timelineText.value = '时间轴读取失败'
+    timelineDetails.value = timelineText.value
   }
 }
 
@@ -150,15 +200,34 @@ async function startPlaybackCapabilitiesListener() {
   }
 }
 
+/** 先建立时间轴订阅，再读取当前快照，避免初始化期间遗漏变化。 */
+async function startTimelineListener() {
+  try {
+    const stopListener = await listenToCurrentTimelineChanges(showCurrentTimeline)
+    if (hasUnmounted) {
+      stopListener()
+      return
+    }
+
+    stopTimelineListener = stopListener
+    await loadCurrentTimeline()
+  } catch {
+    timelineText.value = '时间轴监听失败'
+    timelineDetails.value = timelineText.value
+  }
+}
+
 onMounted(startMediaMetadataListener)
 onMounted(startPlaybackCapabilitiesListener)
 onMounted(startPlaybackStatusListener)
+onMounted(startTimelineListener)
 
 onBeforeUnmount(() => {
   hasUnmounted = true
   stopMediaMetadataListener?.()
   stopPlaybackCapabilitiesListener?.()
   stopPlaybackStatusListener?.()
+  stopTimelineListener?.()
 })
 </script>
 
@@ -168,8 +237,9 @@ onBeforeUnmount(() => {
       aria-label="Muse Bar"
       class="bg-secondary text-secondary-foreground flex h-full w-full items-center justify-center rounded-md border px-3 text-sm font-medium"
     >
-      <span class="truncate" :title="mediaMetadataDetails">
-        {{ playbackStatusText }} · {{ mediaMetadataStatus }} · {{ playbackCapabilitiesText }}
+      <span class="truncate" :title="mediaDetails">
+        {{ playbackStatusText }} · {{ mediaMetadataStatus }} · {{ timelineText }} ·
+        {{ playbackCapabilitiesText }}
       </span>
     </section>
   </main>
