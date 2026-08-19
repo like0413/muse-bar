@@ -1,21 +1,18 @@
 use tauri::Manager;
 
 /// 任务栏 Child 窗口的样式、挂载与位置维护。
-#[cfg(target_os = "windows")]
 mod child_host;
 
 /// 前端可调用的 Tauri 命令。
 mod commands;
 
 /// Explorer 生命周期与任务栏重建消息监听。
-#[cfg(target_os = "windows")]
 mod explorer_monitor;
 
 /// 与操作系统交互的条件编译边界。
 mod platform;
 
 /// 全局系统媒体管理器的进程级生命周期。
-#[cfg(target_os = "windows")]
 mod system_media;
 
 /// 用户设置的数据结构与默认值。
@@ -25,19 +22,14 @@ mod settings;
 mod state;
 
 /// Windows 任务栏的发现与运行时信息。
-#[cfg(target_os = "windows")]
 mod taskbar;
 
 /// 配置插件并启动整个应用共享的 Tauri 运行时。
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
         .setup(|app| {
             let settings = settings::AppSettings::load(app.handle())?;
             app.manage(state::AppState::new(env!("CARGO_PKG_VERSION"), settings));
-
-            #[cfg(target_os = "windows")]
-            app.manage(system_media::SystemMediaManager::initialize(app.handle()));
 
             #[cfg(debug_assertions)]
             {
@@ -48,10 +40,10 @@ pub fn run() {
                 )?;
             }
 
-            #[cfg(target_os = "windows")]
-            {
-                explorer_monitor::start(app.handle().clone())?;
-            }
+            // 媒体管理器初始化期间也可能发生 WinRT 错误，因此调试日志必须先就绪。
+            app.manage(system_media::SystemMediaManager::initialize(app.handle()));
+
+            explorer_monitor::start(app.handle().clone())?;
 
             Ok(())
         })

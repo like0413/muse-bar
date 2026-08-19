@@ -19,6 +19,8 @@ import {
 
 const mediaMetadataStatus = ref('正在读取媒体信息')
 const mediaMetadataDetails = ref('')
+const artworkDataUrl = ref<string | null>(null)
+const artworkDecodeFailed = ref(false)
 const playbackStatusText = ref('')
 const playbackCapabilitiesText = ref('')
 const timelineText = ref('')
@@ -65,12 +67,21 @@ function showCurrentMediaMetadata(metadata: CurrentMediaMetadata | null) {
   if (!metadata) {
     mediaMetadataStatus.value = '当前没有媒体会话'
     mediaMetadataDetails.value = mediaMetadataStatus.value
+    artworkDataUrl.value = null
+    artworkDecodeFailed.value = false
     return
   }
 
   const title = metadata.title || '未知标题'
   mediaMetadataStatus.value = metadata.artist ? `${title} · ${metadata.artist}` : title
   mediaMetadataDetails.value = `${metadata.sourceAppId}\n标题：${title}\n歌手：${metadata.artist || '未知歌手'}`
+  artworkDataUrl.value = metadata.artworkDataUrl
+  artworkDecodeFailed.value = false
+}
+
+/** 记录 WebView 封面解码失败，并保留固定占位区域供用户识别。 */
+function showArtworkFallback() {
+  artworkDecodeFailed.value = true
 }
 
 /** 将 Windows 播放状态转换为当前验证页面使用的中文文本。 */
@@ -250,9 +261,29 @@ onBeforeUnmount(() => {
   <main class="flex h-screen w-screen items-center justify-center bg-transparent p-1">
     <section
       aria-label="Muse Bar"
-      class="bg-secondary text-secondary-foreground flex h-full w-full items-center justify-center rounded-md border px-3 text-sm font-medium"
+      class="bg-secondary text-secondary-foreground flex h-full w-full items-center gap-2 rounded-md border px-2 text-sm font-medium"
     >
-      <span class="truncate" :title="mediaDetails">
+      <div
+        v-if="artworkDataUrl"
+        class="bg-muted relative size-8 shrink-0 overflow-hidden rounded border"
+      >
+        <img
+          v-show="!artworkDecodeFailed"
+          :src="artworkDataUrl"
+          alt=""
+          class="block size-full object-cover"
+          draggable="false"
+          @error="showArtworkFallback"
+        />
+        <span
+          v-if="artworkDecodeFailed"
+          aria-label="封面加载失败"
+          class="text-muted-foreground absolute inset-0 flex items-center justify-center text-base"
+        >
+          ♪
+        </span>
+      </div>
+      <span class="min-w-0 flex-1 truncate" :title="mediaDetails">
         {{ barSummary }}
       </span>
     </section>

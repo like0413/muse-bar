@@ -20,6 +20,7 @@ export interface CurrentMediaMetadata {
   sourceAppId: string
   title: string
   artist: string
+  artworkDataUrl: string | null
 }
 
 export interface CurrentPlaybackCapabilities {
@@ -59,12 +60,12 @@ export function listenToMediaSessionChanges(
   })
 }
 
-/** 读取 Windows 当前媒体会话的 Source App ID、标题和歌手。 */
+/** 从 Rust 缓存读取 Windows 当前媒体会话的标题、歌手和封面。 */
 export function getCurrentMediaMetadata(): Promise<CurrentMediaMetadata | null> {
   return invoke<CurrentMediaMetadata | null>('get_current_media_metadata')
 }
 
-/** 订阅 Windows 当前媒体会话的文本元数据变化。 */
+/** 订阅 Windows 当前媒体会话的完整元数据变化。 */
 export function listenToCurrentMediaMetadataChanges(
   handleMetadata: (metadata: CurrentMediaMetadata | null) => void,
 ): Promise<UnlistenFn> {

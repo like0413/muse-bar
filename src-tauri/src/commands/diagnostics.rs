@@ -42,7 +42,6 @@ pub struct TaskbarDpiDiagnostic {
     logical_rect: LogicalTaskbarRectDiagnostic,
 }
 
-#[cfg(target_os = "windows")]
 impl TaskbarRectDiagnostic {
     /// 将任务栏领域矩形转换为前端诊断数据。
     fn from_taskbar_rect(rect: &crate::taskbar::TaskbarRect) -> Self {
@@ -57,7 +56,6 @@ impl TaskbarRectDiagnostic {
     }
 }
 
-#[cfg(target_os = "windows")]
 impl LogicalTaskbarRectDiagnostic {
     /// 根据任务栏 DPI 将物理矩形转换为逻辑像素矩形。
     fn from_physical_rect(
@@ -76,7 +74,6 @@ impl LogicalTaskbarRectDiagnostic {
 }
 
 /// 查找并验证主任务栏，然后返回可序列化的诊断数据。
-#[cfg(target_os = "windows")]
 #[tauri::command]
 pub fn get_taskbar_identity() -> Result<TaskbarIdentityDiagnostic, String> {
     let taskbar = crate::taskbar::find_main_taskbar()?;
@@ -88,7 +85,6 @@ pub fn get_taskbar_identity() -> Result<TaskbarIdentityDiagnostic, String> {
 }
 
 /// 查找主任务栏并返回它在屏幕坐标系中的物理像素矩形。
-#[cfg(target_os = "windows")]
 #[tauri::command]
 pub fn get_taskbar_rect() -> Result<TaskbarRectDiagnostic, String> {
     let taskbar = crate::taskbar::find_main_taskbar()?;
@@ -98,7 +94,6 @@ pub fn get_taskbar_rect() -> Result<TaskbarRectDiagnostic, String> {
 }
 
 /// 返回任务栏窗口 DPI 以及物理像素到逻辑像素的换算结果。
-#[cfg(target_os = "windows")]
 #[tauri::command]
 pub fn get_taskbar_dpi() -> Result<TaskbarDpiDiagnostic, String> {
     let taskbar = crate::taskbar::find_main_taskbar()?;
@@ -111,25 +106,4 @@ pub fn get_taskbar_dpi() -> Result<TaskbarDpiDiagnostic, String> {
         physical_rect: TaskbarRectDiagnostic::from_taskbar_rect(&physical_rect),
         logical_rect: LogicalTaskbarRectDiagnostic::from_physical_rect(&physical_rect, &dpi),
     })
-}
-
-/// 在非 Windows 平台返回明确的不支持错误。
-#[cfg(not(target_os = "windows"))]
-#[tauri::command]
-pub fn get_taskbar_identity() -> Result<TaskbarIdentityDiagnostic, String> {
-    Err("任务栏诊断仅支持 Windows".to_owned())
-}
-
-/// 在非 Windows 平台返回明确的不支持错误。
-#[cfg(not(target_os = "windows"))]
-#[tauri::command]
-pub fn get_taskbar_rect() -> Result<TaskbarRectDiagnostic, String> {
-    Err("任务栏诊断仅支持 Windows".to_owned())
-}
-
-/// 在非 Windows 平台返回明确的不支持错误。
-#[cfg(not(target_os = "windows"))]
-#[tauri::command]
-pub fn get_taskbar_dpi() -> Result<TaskbarDpiDiagnostic, String> {
-    Err("任务栏诊断仅支持 Windows".to_owned())
 }
