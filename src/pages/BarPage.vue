@@ -19,9 +19,9 @@ import {
 
 const mediaMetadataStatus = ref('正在读取媒体信息')
 const mediaMetadataDetails = ref('')
-const playbackStatusText = ref('状态读取中')
-const playbackCapabilitiesText = ref('能力读取中')
-const timelineText = ref('时间轴读取中')
+const playbackStatusText = ref('')
+const playbackCapabilitiesText = ref('')
+const timelineText = ref('')
 const timelineDetails = ref('')
 let stopMediaMetadataListener: UnlistenFn | undefined
 let stopPlaybackCapabilitiesListener: UnlistenFn | undefined
@@ -30,9 +30,24 @@ let stopTimelineListener: UnlistenFn | undefined
 let hasUnmounted = false
 
 const mediaDetails = computed(() =>
-  [mediaMetadataDetails.value, timelineDetails.value, `控制能力：${playbackCapabilitiesText.value}`]
+  [
+    mediaMetadataDetails.value,
+    timelineDetails.value,
+    playbackCapabilitiesText.value && `控制能力：${playbackCapabilitiesText.value}`,
+  ]
     .filter(Boolean)
     .join('\n'),
+)
+
+const barSummary = computed(() =>
+  [
+    playbackStatusText.value,
+    mediaMetadataStatus.value,
+    timelineText.value,
+    playbackCapabilitiesText.value,
+  ]
+    .filter(Boolean)
+    .join(' · '),
 )
 
 const playbackStatusLabels: Record<CurrentPlaybackStatus, string> = {
@@ -238,8 +253,7 @@ onBeforeUnmount(() => {
       class="bg-secondary text-secondary-foreground flex h-full w-full items-center justify-center rounded-md border px-3 text-sm font-medium"
     >
       <span class="truncate" :title="mediaDetails">
-        {{ playbackStatusText }} · {{ mediaMetadataStatus }} · {{ timelineText }} ·
-        {{ playbackCapabilitiesText }}
+        {{ barSummary }}
       </span>
     </section>
   </main>
