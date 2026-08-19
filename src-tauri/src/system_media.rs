@@ -5,12 +5,14 @@ use tauri::{AppHandle, Emitter, Runtime};
 use windows::Foundation::TypedEventHandler;
 use windows::Media::Control::{
     CurrentSessionChangedEventArgs, GlobalSystemMediaTransportControlsSession,
-    GlobalSystemMediaTransportControlsSessionManager, MediaPropertiesChangedEventArgs,
-    SessionsChangedEventArgs,
+    GlobalSystemMediaTransportControlsSessionManager,
+    GlobalSystemMediaTransportControlsSessionPlaybackStatus, MediaPropertiesChangedEventArgs,
+    PlaybackInfoChangedEventArgs, SessionsChangedEventArgs,
 };
 
 const MEDIA_SESSIONS_CHANGED_EVENT: &str = "media-sessions-changed";
 const CURRENT_MEDIA_METADATA_CHANGED_EVENT: &str = "current-media-metadata-changed";
+const CURRENT_PLAYBACK_STATUS_CHANGED_EVENT: &str = "current-playback-status-changed";
 
 /// 当前 Windows 系统会话可提供的基础文本元数据。
 #[derive(Debug, Clone, Serialize)]
@@ -21,11 +23,25 @@ pub(crate) struct CurrentMediaMetadata {
     artist: String,
 }
 
+/// Windows 当前媒体会话的播放状态。
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum CurrentPlaybackStatus {
+    Closed,
+    Opened,
+    Changing,
+    Stopped,
+    Playing,
+    Paused,
+    Unknown,
+}
+
 /// 保存当前会话以及注销其元数据事件所需的 token。
 #[derive(Default)]
 struct CurrentSessionObservation {
     session: Option<GlobalSystemMediaTransportControlsSession>,
     media_properties_changed_token: Option<i64>,
+    playback_info_changed_token: Option<i64>,
 }
 
 /// 保存整个应用进程唯一的 Windows 全局系统媒体管理器。
@@ -99,6 +115,19 @@ impl SystemMediaManager {
         };
 
         read_media_metadata(&session).map(Some)
+    }
+
+    /// 读取 Windows 当前会话的播放状态；没有当前会话时返回空值。
+    pub(crate) fn current_playback_status(&self) -> Result<Option<CurrentPlaybackStatus>, String> {
+        let manager = self
+            .manager
+            .as_ref()
+            .ok_or_else(|| "Windows 全局系统媒体管理器尚未初始化".to_owned())?;
+        let Some(session) = manager.GetCurrentSession().ok() else {
+            return Ok(None);
+        };
+
+        read_playback_status(&session).map(Some)
     }
 }
 
@@ -212,6 +241,11 @@ fn bind_current_session<R: Runtime>(
             Option::<CurrentMediaMetadata>::None,
         )
         .map_err(|error| format!("无法广播当前媒体会话已清空：{error}"))?;
+        app.emit(
+            CURRENT_PLAYBACK_STATUS_CHANGED_EVENT,
+            Option::<CurrentPlaybackStatus>::None,
+        )
+        .map_err(|error| format!("无法广播当前播放状态已清空：{error}"))?;
         return Ok(());
     };
 
@@ -234,11 +268,36 @@ fn bind_current_session<R: Runtime>(
         .MediaPropertiesChanged(&handler)
         .map_err(|error| format!("无法订阅当前媒体会话元数据变化：{error}"))?;
 
+    let playback_app = app.clone();
+    let playback_handler: TypedEventHandler<
+        GlobalSystemMediaTransportControlsSession,
+        PlaybackInfoChangedEventArgs,
+    > = TypedEventHandler::new(
+        move |sender: windows::core::Ref<'_, GlobalSystemMediaTransportControlsSession>,
+              _: windows::core::Ref<'_, PlaybackInfoChangedEventArgs>| {
+            let Some(session) = sender.as_ref() else {
+                return Ok(());
+            };
+
+            emit_playback_status(session, &playback_app);
+            Ok(())
+        },
+    );
+    let playback_token = match session.PlaybackInfoChanged(&playback_handler) {
+        Ok(token) => token,
+        Err(error) => {
+            let _ = session.RemoveMediaPropertiesChanged(token);
+            return Err(format!("无法订阅当前媒体会话播放状态变化：{error}"));
+        }
+    };
+
     observation.session = Some(session.clone());
     observation.media_properties_changed_token = Some(token);
+    observation.playback_info_changed_token = Some(playback_token);
     drop(observation);
 
     emit_media_metadata(&session, app);
+    emit_playback_status(&session, app);
     Ok(())
 }
 
@@ -252,9 +311,18 @@ fn clear_current_session_observation(observation: &mut CurrentSessionObservation
             log::warn!("无法注销当前媒体会话元数据监听：{error}");
         }
     }
+    if let (Some(session), Some(token)) = (
+        &observation.session,
+        observation.playback_info_changed_token,
+    ) {
+        if let Err(error) = session.RemovePlaybackInfoChanged(token) {
+            log::warn!("无法注销当前媒体会话播放状态监听：{error}");
+        }
+    }
 
     observation.session = None;
     observation.media_properties_changed_token = None;
+    observation.playback_info_changed_token = None;
 }
 
 /// 读取会话文本元数据并广播；事件回调中的读取失败只记录日志。
@@ -269,6 +337,21 @@ fn emit_media_metadata<R: Runtime>(
             }
         }
         Err(error) => log::warn!("无法在媒体变化后读取标题和歌手：{error}"),
+    }
+}
+
+/// 读取当前会话播放状态并广播；事件回调中的读取失败只记录日志。
+fn emit_playback_status<R: Runtime>(
+    session: &GlobalSystemMediaTransportControlsSession,
+    app: &AppHandle<R>,
+) {
+    match read_playback_status(session) {
+        Ok(status) => {
+            if let Err(error) = app.emit(CURRENT_PLAYBACK_STATUS_CHANGED_EVENT, Some(status)) {
+                log::warn!("无法广播当前媒体会话播放状态：{error}");
+            }
+        }
+        Err(error) => log::warn!("无法在播放信息变化后读取状态：{error}"),
     }
 }
 
@@ -295,6 +378,36 @@ fn read_media_metadata(
         title: title.to_string(),
         artist: artist.to_string(),
     })
+}
+
+/// 读取 WinRT 播放信息，并转换为可稳定序列化的应用状态。
+fn read_playback_status(
+    session: &GlobalSystemMediaTransportControlsSession,
+) -> Result<CurrentPlaybackStatus, String> {
+    let playback_info = session
+        .GetPlaybackInfo()
+        .map_err(|error| format!("无法读取当前会话播放信息：{error}"))?;
+    let status = playback_info
+        .PlaybackStatus()
+        .map_err(|error| format!("无法读取当前会话播放状态：{error}"))?;
+
+    let status = if status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Closed {
+        CurrentPlaybackStatus::Closed
+    } else if status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Opened {
+        CurrentPlaybackStatus::Opened
+    } else if status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Changing {
+        CurrentPlaybackStatus::Changing
+    } else if status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Stopped {
+        CurrentPlaybackStatus::Stopped
+    } else if status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing {
+        CurrentPlaybackStatus::Playing
+    } else if status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Paused {
+        CurrentPlaybackStatus::Paused
+    } else {
+        CurrentPlaybackStatus::Unknown
+    };
+
+    Ok(status)
 }
 
 /// 从指定管理器读取全部会话，并提取 Source App ID。

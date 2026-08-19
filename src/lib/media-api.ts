@@ -3,6 +3,16 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 const MEDIA_SESSIONS_CHANGED_EVENT = 'media-sessions-changed'
 const CURRENT_MEDIA_METADATA_CHANGED_EVENT = 'current-media-metadata-changed'
+const CURRENT_PLAYBACK_STATUS_CHANGED_EVENT = 'current-playback-status-changed'
+
+export type CurrentPlaybackStatus =
+  | 'closed'
+  | 'opened'
+  | 'changing'
+  | 'stopped'
+  | 'playing'
+  | 'paused'
+  | 'unknown'
 
 export interface CurrentMediaMetadata {
   sourceAppId: string
@@ -40,5 +50,19 @@ export function listenToCurrentMediaMetadataChanges(
 ): Promise<UnlistenFn> {
   return listen<CurrentMediaMetadata | null>(CURRENT_MEDIA_METADATA_CHANGED_EVENT, (event) => {
     handleMetadata(event.payload)
+  })
+}
+
+/** 读取 Windows 当前媒体会话的播放状态。 */
+export function getCurrentPlaybackStatus(): Promise<CurrentPlaybackStatus | null> {
+  return invoke<CurrentPlaybackStatus | null>('get_current_playback_status')
+}
+
+/** 订阅 Windows 当前媒体会话的播放状态变化。 */
+export function listenToCurrentPlaybackStatusChanges(
+  handleStatus: (status: CurrentPlaybackStatus | null) => void,
+): Promise<UnlistenFn> {
+  return listen<CurrentPlaybackStatus | null>(CURRENT_PLAYBACK_STATUS_CHANGED_EVENT, (event) => {
+    handleStatus(event.payload)
   })
 }

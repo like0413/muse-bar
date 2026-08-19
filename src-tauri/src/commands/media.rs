@@ -2,7 +2,7 @@
 use tauri::State;
 
 #[cfg(target_os = "windows")]
-use crate::system_media::{CurrentMediaMetadata, SystemMediaManager};
+use crate::system_media::{CurrentMediaMetadata, CurrentPlaybackStatus, SystemMediaManager};
 
 /// 返回进程级 Windows 全局系统媒体管理器是否初始化成功。
 #[cfg(target_os = "windows")]
@@ -29,6 +29,15 @@ pub fn get_current_media_metadata(
     state.current_media_metadata()
 }
 
+/// 返回 Windows 当前媒体会话的播放状态。
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub fn get_current_playback_status(
+    state: State<'_, SystemMediaManager>,
+) -> Result<Option<CurrentPlaybackStatus>, String> {
+    state.current_playback_status()
+}
+
 /// 非 Windows 平台没有可用的 Windows 全局系统媒体管理器。
 #[cfg(not(target_os = "windows"))]
 #[tauri::command]
@@ -48,4 +57,11 @@ pub fn get_media_session_source_app_ids() -> Result<Vec<String>, String> {
 #[tauri::command]
 pub fn get_current_media_metadata() -> Result<Option<()>, String> {
     Err("当前媒体元数据仅支持 Windows".to_owned())
+}
+
+/// 非 Windows 平台没有可读取的 Windows 当前播放状态。
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+pub fn get_current_playback_status() -> Result<Option<()>, String> {
+    Err("当前媒体播放状态仅支持 Windows".to_owned())
 }
