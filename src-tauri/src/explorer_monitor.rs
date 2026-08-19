@@ -128,13 +128,8 @@ fn recover_bar_once(app: &AppHandle) -> Result<(), String> {
         }
     };
 
-    let recovery_result = (|| {
-        child_host::prepare_window(&bar_window)?;
-        child_host::attach_to_taskbar(&bar_window, &taskbar, &taskbar_rect)
-    })();
-
-    let attachment = match recovery_result {
-        Ok(attachment) => attachment,
+    let host_size = match child_host::attach_window(&bar_window, &taskbar, &taskbar_rect) {
+        Ok(host_size) => host_size,
         Err(error) => {
             if bar_recreated {
                 let _ = bar_window.destroy();
@@ -145,7 +140,7 @@ fn recover_bar_once(app: &AppHandle) -> Result<(), String> {
 
     if bar_recreated {
         let webview_builder = WebviewBuilder::from_config(config);
-        let webview_size = PhysicalSize::new(attachment.width as u32, attachment.height as u32);
+        let webview_size = PhysicalSize::new(host_size.width, host_size.height);
         if let Err(error) =
             bar_window.add_child(webview_builder, PhysicalPosition::new(0, 0), webview_size)
         {

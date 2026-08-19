@@ -16,9 +16,9 @@ const SETTINGS_FILE_NAME: &str = "settings.json";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WindowMode {
-    /// 优先尝试 Child 嵌入，失败时回退到 Owner 模式。
+    /// 使用当前默认宿主策略；现阶段只启用 Child，Owner 回退将在后续版本实现。
     Auto,
-    /// 始终使用独立的 Owner 窗口贴合任务栏。
+    /// 为将来的独立 Owner 宿主预留，现阶段不启用。
     Owner,
 }
 

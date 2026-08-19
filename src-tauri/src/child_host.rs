@@ -18,10 +18,10 @@ const STABILIZATION_DELAYS: [Duration; 3] = [
     Duration::from_millis(700),
 ];
 
-/// Child 挂载后提供给 WebView 创建流程的原生窗口信息。
-pub(crate) struct ChildAttachment {
-    pub(crate) width: i32,
-    pub(crate) height: i32,
+/// Child 挂载后提供给 WebView 创建流程的物理像素尺寸。
+pub(crate) struct ChildHostSize {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
 }
 
 /// 判断 Tauri 保存的 Bar 句柄是否仍对应当前进程中的有效窗口。
@@ -40,12 +40,30 @@ pub(crate) fn is_window_alive<R: Runtime>(bar_window: &Window<R>) -> bool {
     process_id == unsafe { GetCurrentProcessId() }
 }
 
-/// 在挂载任务栏前，将 Tauri 顶层宿主转换为可交互的分层 Child 窗口。
-pub(crate) fn prepare_window<R: Runtime>(bar_window: &Window<R>) -> Result<(), String> {
-    let handle = bar_window
+/// 将 Tauri 窗口转换为正式 Child 宿主并挂载到目标任务栏矩形。
+///
+/// 调用方只需要提供经过验证的任务栏身份和矩形；窗口样式、分层属性、父子关系、
+/// 坐标转换和短期位置稳定化全部由本模块维护。
+pub(crate) fn attach_window<R: Runtime>(
+    bar_window: &Window<R>,
+    taskbar: &TaskbarIdentity,
+    taskbar_rect: &TaskbarRect,
+) -> Result<ChildHostSize, String> {
+    let bar_handle = bar_window
         .hwnd()
         .map_err(|error| format!("无法取得 Bar 窗口句柄：{error}"))?;
 
+    prepare_window(bar_handle)?;
+    let (width, height) = attach_to_taskbar(bar_window, bar_handle, taskbar, taskbar_rect)?;
+
+    Ok(ChildHostSize {
+        width: u32::try_from(width).map_err(|_| "Bar 宽度无法转换为物理像素".to_owned())?,
+        height: u32::try_from(height).map_err(|_| "Bar 高度无法转换为物理像素".to_owned())?,
+    })
+}
+
+/// 在挂载任务栏前，将 Tauri 顶层宿主转换为可交互的分层 Child 窗口。
+fn prepare_window(handle: HWND) -> Result<(), String> {
     let current_style = read_window_style(handle)?;
     let child_style =
         (current_style & !WS_POPUP.0) | WS_CHILD.0 | WS_CLIPCHILDREN.0 | WS_CLIPSIBLINGS.0;
@@ -78,14 +96,12 @@ pub(crate) fn prepare_window<R: Runtime>(bar_window: &Window<R>) -> Result<(), S
 }
 
 /// 将准备完成的 Bar 挂载到任务栏，并在任务栏客户区中居中放置。
-pub(crate) fn attach_to_taskbar<R: Runtime>(
+fn attach_to_taskbar<R: Runtime>(
     bar_window: &Window<R>,
+    bar_handle: HWND,
     taskbar: &TaskbarIdentity,
     taskbar_rect: &TaskbarRect,
-) -> Result<ChildAttachment, String> {
-    let bar_handle = bar_window
-        .hwnd()
-        .map_err(|error| format!("无法取得 Bar 窗口句柄：{error}"))?;
+) -> Result<(i32, i32), String> {
     let (bar_width, bar_height) = read_window_size(bar_handle)?;
 
     if bar_width > taskbar_rect.width() || bar_height > taskbar_rect.height() {
@@ -147,10 +163,7 @@ pub(crate) fn attach_to_taskbar<R: Runtime>(
         bar_height,
     )?;
 
-    Ok(ChildAttachment {
-        width: bar_width,
-        height: bar_height,
-    })
+    Ok((bar_width, bar_height))
 }
 
 /// 在 WebView 异步初始化期间短暂重申位置，防止顶层坐标再次写入 Child。
