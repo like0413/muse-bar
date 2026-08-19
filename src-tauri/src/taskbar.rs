@@ -1,15 +1,16 @@
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
 
 use crate::platform::windows::{
-    w, CloseHandle, FindWindowW, GetWindowRect, GetWindowThreadProcessId, OpenProcess,
-    QueryFullProcessImageNameW, HANDLE, HWND, PROCESS_NAME_WIN32,
+    w, CloseHandle, FindWindowW, GetMonitorInfoW, GetWindowRect, GetWindowThreadProcessId,
+    MonitorFromWindow, OpenProcess, QueryFullProcessImageNameW, HANDLE, HWND, MONITORINFO,
+    MONITORINFOF_PRIMARY, MONITOR_DEFAULTTONULL, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION, PWSTR, RECT,
 };
 
 const PROCESS_PATH_BUFFER_LENGTH: usize = 32_768;
 const WINDOWS_DEFAULT_DPI: f64 = 96.0;
 
-/// 经过 Explorer 进程校验的主任务栏身份。
+/// 经过 Explorer 进程和主显示器双重校验的主任务栏身份。
 #[derive(Debug)]
 pub struct TaskbarIdentity {
     handle: HWND,
@@ -109,7 +110,7 @@ impl Drop for OwnedHandle {
     }
 }
 
-/// 查找主任务栏，并验证它确实属于 explorer.exe。
+/// 查找主任务栏，并验证它属于 explorer.exe 和 Windows 主显示器。
 pub fn find_main_taskbar() -> Result<TaskbarIdentity, String> {
     let handle = unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }
         .map_err(|error| format!("无法找到主任务栏窗口：{error}"))?;
@@ -131,10 +132,35 @@ pub fn find_main_taskbar() -> Result<TaskbarIdentity, String> {
         ));
     }
 
+    verify_primary_monitor(handle)?;
+
     Ok(TaskbarIdentity {
         handle,
         explorer_process_id: process_id,
     })
+}
+
+/// 验证任务栏 HWND 所在显示器带有 Windows 主显示器标志。
+fn verify_primary_monitor(taskbar_handle: HWND) -> Result<(), String> {
+    let monitor = unsafe { MonitorFromWindow(taskbar_handle, MONITOR_DEFAULTTONULL) };
+    if monitor.0.is_null() {
+        return Err("无法确定主任务栏所在的显示器".to_owned());
+    }
+
+    let mut monitor_info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    let read_succeeded = unsafe { GetMonitorInfoW(monitor, &mut monitor_info) };
+    if !read_succeeded.as_bool() {
+        return Err("无法读取主任务栏所在显示器的信息".to_owned());
+    }
+
+    if monitor_info.dwFlags & MONITORINFOF_PRIMARY == 0 {
+        return Err("Shell_TrayWnd 不在 Windows 主显示器上".to_owned());
+    }
+
+    Ok(())
 }
 
 /// 读取已验证任务栏的屏幕矩形，并计算物理像素宽高。

@@ -6,8 +6,10 @@ pub use ::windows::Win32::Foundation::{
     CloseHandle, COLORREF, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 
-/// 将屏幕坐标转换为指定窗口客户区坐标。
-pub use ::windows::Win32::Graphics::Gdi::ScreenToClient;
+/// 屏幕坐标转换以及窗口所属显示器查询 API。
+pub use ::windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromWindow, ScreenToClient, MONITORINFO, MONITOR_DEFAULTTONULL,
+};
 
 /// 获取创建隐藏消息窗口所需的当前模块句柄。
 pub use ::windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -27,7 +29,7 @@ pub use ::windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsWindow, PostQuitMessage,
     RegisterClassW, RegisterWindowMessageW, SetLayeredWindowAttributes, SetParent,
     SetWindowLongPtrW, SetWindowPos, TranslateMessage, GWL_EXSTYLE, GWL_STYLE, HWND_TOP, LWA_ALPHA,
-    MSG, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_SHOWWINDOW, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_DESTROY, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_LAYERED,
+    MONITORINFOF_PRIMARY, MSG, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_SHOWWINDOW, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_DESTROY, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TRANSPARENT, WS_POPUP,
 };
