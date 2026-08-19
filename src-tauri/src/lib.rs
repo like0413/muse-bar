@@ -14,6 +14,10 @@ mod explorer_monitor;
 /// 与操作系统交互的条件编译边界。
 mod platform;
 
+/// 全局系统媒体管理器的进程级生命周期。
+#[cfg(target_os = "windows")]
+mod system_media;
+
 /// 用户设置的数据结构与默认值。
 mod settings;
 
@@ -31,6 +35,9 @@ pub fn run() {
         .setup(|app| {
             let settings = settings::AppSettings::load(app.handle())?;
             app.manage(state::AppState::new(env!("CARGO_PKG_VERSION"), settings));
+
+            #[cfg(target_os = "windows")]
+            app.manage(system_media::SystemMediaManager::initialize());
 
             #[cfg(debug_assertions)]
             {
@@ -52,6 +59,7 @@ pub fn run() {
             commands::diagnostics::get_taskbar_dpi,
             commands::diagnostics::get_taskbar_identity,
             commands::diagnostics::get_taskbar_rect,
+            commands::media::is_system_media_manager_initialized,
             commands::runtime::get_runtime_info,
             commands::settings::get_settings,
             commands::settings::update_settings
