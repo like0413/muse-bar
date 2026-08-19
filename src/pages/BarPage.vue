@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { PauseIcon, PlayIcon, SkipBackIcon, SkipForwardIcon } from '@lucide/vue'
+import { Music2Icon, PauseIcon, PlayIcon, SkipBackIcon, SkipForwardIcon } from '@lucide/vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { ButtonGroup, ButtonGroupSeparator } from '@/components/ui/button-group'
 import {
@@ -28,12 +29,12 @@ import { openSettingsWindow } from '@/lib/settings-window'
 
 const mediaMetadataStatus = ref('正在读取媒体信息')
 const mediaMetadataDetails = ref('')
+const currentTitle = ref('')
+const currentArtist = ref('')
 const artworkDataUrl = ref<string | null>(null)
-const artworkDecodeFailed = ref(false)
 const accentColor = ref('#0078D4')
 const playbackStatusText = ref('')
 const playbackCapabilitiesText = ref('')
-const timelineText = ref('')
 const timelineDetails = ref('')
 const settingsWindowError = ref('')
 const mediaSelectionText = ref('')
@@ -52,26 +53,18 @@ let hasUnmounted = false
 const mediaDetails = computed(() =>
   [
     mediaMetadataDetails.value,
+    playbackStatusText.value && `播放状态：${playbackStatusText.value}`,
     timelineDetails.value,
     playbackCapabilitiesText.value && `控制能力：${playbackCapabilitiesText.value}`,
     mediaSelectionText.value,
+    settingsWindowError.value,
+    controlError.value,
   ]
     .filter(Boolean)
     .join('\n'),
 )
 
-const barSummary = computed(() =>
-  [
-    playbackStatusText.value,
-    mediaMetadataStatus.value,
-    timelineText.value,
-    playbackCapabilitiesText.value,
-    settingsWindowError.value,
-    controlError.value,
-  ]
-    .filter(Boolean)
-    .join(' · '),
-)
+const displayTitle = computed(() => currentTitle.value || mediaMetadataStatus.value)
 
 const playbackStatusLabels: Record<CurrentPlaybackStatus, string> = {
   closed: '已关闭',
@@ -111,23 +104,20 @@ function showCurrentMediaMetadata(metadata: CurrentMediaMetadata | null) {
   if (!metadata) {
     mediaMetadataStatus.value = '当前没有媒体会话'
     mediaMetadataDetails.value = mediaMetadataStatus.value
+    currentTitle.value = ''
+    currentArtist.value = ''
     artworkDataUrl.value = null
-    artworkDecodeFailed.value = false
     accentColor.value = '#0078D4'
     return
   }
 
   const title = metadata.title || '未知标题'
+  currentTitle.value = title
+  currentArtist.value = metadata.artist
   mediaMetadataStatus.value = metadata.artist ? `${title} · ${metadata.artist}` : title
   mediaMetadataDetails.value = `${metadata.sourceAppId}\n标题：${title}\n歌手：${metadata.artist || '未知歌手'}`
   artworkDataUrl.value = metadata.artworkDataUrl
   accentColor.value = metadata.accentColor || '#0078D4'
-  artworkDecodeFailed.value = false
-}
-
-/** 记录 WebView 封面解码失败，并保留固定占位区域供用户识别。 */
-function showArtworkFallback() {
-  artworkDecodeFailed.value = true
 }
 
 /** 响应 Bar 右键操作，打开已有设置窗口或创建一个新的设置窗口。 */
@@ -216,16 +206,15 @@ function formatDuration(milliseconds: number) {
 function showCurrentTimeline(timeline: CurrentTimeline | null) {
   currentTimeline.value = timeline
   if (!timeline) {
-    timelineText.value = '无有效时间轴'
-    timelineDetails.value = timelineText.value
+    timelineDetails.value = '无有效时间轴'
     return
   }
 
   const elapsed = timeline.positionMs - timeline.startMs
   const duration = timeline.endMs - timeline.startMs
   const rate = timeline.playbackRate === null ? '速率未知' : `${timeline.playbackRate}x`
-  timelineText.value = `${formatDuration(elapsed)}/${formatDuration(duration)} · ${rate}`
   timelineDetails.value = [
+    `进度：${formatDuration(elapsed)}/${formatDuration(duration)} · ${rate}`,
     `位置：${timeline.positionMs} ms`,
     `范围：${timeline.startMs}–${timeline.endMs} ms`,
     `Seek：${timeline.minSeekMs}–${timeline.maxSeekMs} ms`,
@@ -266,8 +255,7 @@ async function loadCurrentTimeline() {
   try {
     showCurrentTimeline(await getCurrentTimeline())
   } catch {
-    timelineText.value = '时间轴读取失败'
-    timelineDetails.value = timelineText.value
+    timelineDetails.value = '时间轴读取失败'
   }
 }
 
@@ -334,8 +322,7 @@ async function startTimelineListener() {
     stopTimelineListener = stopListener
     await loadCurrentTimeline()
   } catch {
-    timelineText.value = '时间轴监听失败'
-    timelineDetails.value = timelineText.value
+    timelineDetails.value = '时间轴监听失败'
   }
 }
 
@@ -380,29 +367,18 @@ onBeforeUnmount(() => {
       class="bg-secondary text-secondary-foreground relative flex h-full w-full items-center gap-2 overflow-hidden rounded-md border px-2 text-sm font-medium"
       @contextmenu.prevent="handleOpenSettings"
     >
-      <div
-        v-if="artworkDataUrl"
-        class="bg-muted relative size-8 shrink-0 overflow-hidden rounded border"
-      >
-        <img
-          v-show="!artworkDecodeFailed"
-          :src="artworkDataUrl"
-          alt=""
-          class="block size-full object-cover"
-          draggable="false"
-          @error="showArtworkFallback"
-        />
-        <span
-          v-if="artworkDecodeFailed"
-          aria-label="封面加载失败"
-          class="text-muted-foreground absolute inset-0 flex items-center justify-center text-base"
-        >
-          ♪
-        </span>
+      <Avatar class="size-8 rounded-md border">
+        <AvatarImage v-if="artworkDataUrl" :src="artworkDataUrl" alt="" class="object-cover" />
+        <AvatarFallback class="rounded-md" aria-label="暂无歌曲封面">
+          <Music2Icon class="text-muted-foreground size-4" />
+        </AvatarFallback>
+      </Avatar>
+      <div class="flex min-w-0 flex-1 flex-col justify-center" :title="mediaDetails">
+        <p class="truncate text-sm font-medium">{{ displayTitle }}</p>
+        <p v-if="currentArtist" class="text-muted-foreground truncate text-xs font-normal">
+          {{ currentArtist }}
+        </p>
       </div>
-      <span class="min-w-0 flex-1 truncate" :title="mediaDetails">
-        {{ barSummary }}
-      </span>
       <ButtonGroup aria-label="媒体控制" class="shrink-0">
         <Button
           variant="ghost"
@@ -412,7 +388,7 @@ onBeforeUnmount(() => {
           :disabled="isControlPending || !currentPlaybackCapabilities?.canPrevious"
           @click="performControl({ type: 'previous' })"
         >
-          <SkipBackIcon />
+          <SkipBackIcon data-icon="inline-start" />
         </Button>
         <ButtonGroupSeparator />
         <Button
@@ -423,8 +399,8 @@ onBeforeUnmount(() => {
           :disabled="isControlPending || !canTogglePlayPause"
           @click="performControl({ type: 'togglePlayPause' })"
         >
-          <PauseIcon v-if="isPlaying" />
-          <PlayIcon v-else />
+          <PauseIcon v-if="isPlaying" data-icon="inline-start" />
+          <PlayIcon v-else data-icon="inline-start" />
         </Button>
         <ButtonGroupSeparator />
         <Button
@@ -435,7 +411,7 @@ onBeforeUnmount(() => {
           :disabled="isControlPending || !currentPlaybackCapabilities?.canNext"
           @click="performControl({ type: 'next' })"
         >
-          <SkipForwardIcon />
+          <SkipForwardIcon data-icon="inline-start" />
         </Button>
       </ButtonGroup>
       <span
