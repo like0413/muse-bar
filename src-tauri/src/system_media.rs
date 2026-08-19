@@ -6,6 +6,7 @@ use windows::Foundation::TypedEventHandler;
 use windows::Media::Control::{
     CurrentSessionChangedEventArgs, GlobalSystemMediaTransportControlsSession,
     GlobalSystemMediaTransportControlsSessionManager,
+    GlobalSystemMediaTransportControlsSessionPlaybackInfo,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus, MediaPropertiesChangedEventArgs,
     PlaybackInfoChangedEventArgs, SessionsChangedEventArgs,
 };
@@ -13,6 +14,7 @@ use windows::Media::Control::{
 const MEDIA_SESSIONS_CHANGED_EVENT: &str = "media-sessions-changed";
 const CURRENT_MEDIA_METADATA_CHANGED_EVENT: &str = "current-media-metadata-changed";
 const CURRENT_PLAYBACK_STATUS_CHANGED_EVENT: &str = "current-playback-status-changed";
+const CURRENT_PLAYBACK_CAPABILITIES_CHANGED_EVENT: &str = "current-playback-capabilities-changed";
 
 /// 当前 Windows 系统会话可提供的基础文本元数据。
 #[derive(Debug, Clone, Serialize)]
@@ -34,6 +36,17 @@ pub(crate) enum CurrentPlaybackStatus {
     Playing,
     Paused,
     Unknown,
+}
+
+/// Windows 当前媒体会话声明支持的控制能力。
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CurrentPlaybackCapabilities {
+    can_play: bool,
+    can_pause: bool,
+    can_previous: bool,
+    can_next: bool,
+    can_seek: bool,
 }
 
 /// 保存当前会话以及注销其元数据事件所需的 token。
@@ -128,6 +141,21 @@ impl SystemMediaManager {
         };
 
         read_playback_status(&session).map(Some)
+    }
+
+    /// 读取 Windows 当前会话声明的控制能力；没有当前会话时返回空值。
+    pub(crate) fn current_playback_capabilities(
+        &self,
+    ) -> Result<Option<CurrentPlaybackCapabilities>, String> {
+        let manager = self
+            .manager
+            .as_ref()
+            .ok_or_else(|| "Windows 全局系统媒体管理器尚未初始化".to_owned())?;
+        let Some(session) = manager.GetCurrentSession().ok() else {
+            return Ok(None);
+        };
+
+        read_playback_capabilities(&session).map(Some)
     }
 }
 
@@ -246,6 +274,11 @@ fn bind_current_session<R: Runtime>(
             Option::<CurrentPlaybackStatus>::None,
         )
         .map_err(|error| format!("无法广播当前播放状态已清空：{error}"))?;
+        app.emit(
+            CURRENT_PLAYBACK_CAPABILITIES_CHANGED_EVENT,
+            Option::<CurrentPlaybackCapabilities>::None,
+        )
+        .map_err(|error| format!("无法广播当前控制能力已清空：{error}"))?;
         return Ok(());
     };
 
@@ -279,7 +312,7 @@ fn bind_current_session<R: Runtime>(
                 return Ok(());
             };
 
-            emit_playback_status(session, &playback_app);
+            emit_playback_info(session, &playback_app);
             Ok(())
         },
     );
@@ -297,7 +330,7 @@ fn bind_current_session<R: Runtime>(
     drop(observation);
 
     emit_media_metadata(&session, app);
-    emit_playback_status(&session, app);
+    emit_playback_info(&session, app);
     Ok(())
 }
 
@@ -340,18 +373,38 @@ fn emit_media_metadata<R: Runtime>(
     }
 }
 
-/// 读取当前会话播放状态并广播；事件回调中的读取失败只记录日志。
-fn emit_playback_status<R: Runtime>(
+/// 一次读取当前播放信息，并分别广播状态和控制能力。
+fn emit_playback_info<R: Runtime>(
     session: &GlobalSystemMediaTransportControlsSession,
     app: &AppHandle<R>,
 ) {
-    match read_playback_status(session) {
+    let playback_info = match session.GetPlaybackInfo() {
+        Ok(playback_info) => playback_info,
+        Err(error) => {
+            log::warn!("无法在播放信息变化后读取当前会话：{error}");
+            return;
+        }
+    };
+
+    match playback_status_from_info(&playback_info) {
         Ok(status) => {
             if let Err(error) = app.emit(CURRENT_PLAYBACK_STATUS_CHANGED_EVENT, Some(status)) {
                 log::warn!("无法广播当前媒体会话播放状态：{error}");
             }
         }
         Err(error) => log::warn!("无法在播放信息变化后读取状态：{error}"),
+    }
+
+    match playback_capabilities_from_info(&playback_info) {
+        Ok(capabilities) => {
+            if let Err(error) = app.emit(
+                CURRENT_PLAYBACK_CAPABILITIES_CHANGED_EVENT,
+                Some(capabilities),
+            ) {
+                log::warn!("无法广播当前媒体会话控制能力：{error}");
+            }
+        }
+        Err(error) => log::warn!("无法在播放信息变化后读取控制能力：{error}"),
     }
 }
 
@@ -387,6 +440,14 @@ fn read_playback_status(
     let playback_info = session
         .GetPlaybackInfo()
         .map_err(|error| format!("无法读取当前会话播放信息：{error}"))?;
+
+    playback_status_from_info(&playback_info)
+}
+
+/// 从已取得的播放信息中转换应用播放状态。
+fn playback_status_from_info(
+    playback_info: &GlobalSystemMediaTransportControlsSessionPlaybackInfo,
+) -> Result<CurrentPlaybackStatus, String> {
     let status = playback_info
         .PlaybackStatus()
         .map_err(|error| format!("无法读取当前会话播放状态：{error}"))?;
@@ -408,6 +469,44 @@ fn read_playback_status(
     };
 
     Ok(status)
+}
+
+/// 读取当前会话播放信息中的全部控制能力。
+fn read_playback_capabilities(
+    session: &GlobalSystemMediaTransportControlsSession,
+) -> Result<CurrentPlaybackCapabilities, String> {
+    let playback_info = session
+        .GetPlaybackInfo()
+        .map_err(|error| format!("无法读取当前会话播放信息：{error}"))?;
+
+    playback_capabilities_from_info(&playback_info)
+}
+
+/// 从已取得的播放信息中读取播放、暂停、切歌和 seek 能力。
+fn playback_capabilities_from_info(
+    playback_info: &GlobalSystemMediaTransportControlsSessionPlaybackInfo,
+) -> Result<CurrentPlaybackCapabilities, String> {
+    let controls = playback_info
+        .Controls()
+        .map_err(|error| format!("无法读取当前会话控制能力：{error}"))?;
+
+    Ok(CurrentPlaybackCapabilities {
+        can_play: controls
+            .IsPlayEnabled()
+            .map_err(|error| format!("无法读取播放能力：{error}"))?,
+        can_pause: controls
+            .IsPauseEnabled()
+            .map_err(|error| format!("无法读取暂停能力：{error}"))?,
+        can_previous: controls
+            .IsPreviousEnabled()
+            .map_err(|error| format!("无法读取上一曲能力：{error}"))?,
+        can_next: controls
+            .IsNextEnabled()
+            .map_err(|error| format!("无法读取下一曲能力：{error}"))?,
+        can_seek: controls
+            .IsPlaybackPositionEnabled()
+            .map_err(|error| format!("无法读取 seek 能力：{error}"))?,
+    })
 }
 
 /// 从指定管理器读取全部会话，并提取 Source App ID。

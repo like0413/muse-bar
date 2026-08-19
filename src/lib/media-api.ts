@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 const MEDIA_SESSIONS_CHANGED_EVENT = 'media-sessions-changed'
 const CURRENT_MEDIA_METADATA_CHANGED_EVENT = 'current-media-metadata-changed'
 const CURRENT_PLAYBACK_STATUS_CHANGED_EVENT = 'current-playback-status-changed'
+const CURRENT_PLAYBACK_CAPABILITIES_CHANGED_EVENT = 'current-playback-capabilities-changed'
 
 export type CurrentPlaybackStatus =
   | 'closed'
@@ -18,6 +19,14 @@ export interface CurrentMediaMetadata {
   sourceAppId: string
   title: string
   artist: string
+}
+
+export interface CurrentPlaybackCapabilities {
+  canPlay: boolean
+  canPause: boolean
+  canPrevious: boolean
+  canNext: boolean
+  canSeek: boolean
 }
 
 /** 查询 Rust 进程是否已经取得 Windows 全局系统媒体管理器。 */
@@ -65,4 +74,21 @@ export function listenToCurrentPlaybackStatusChanges(
   return listen<CurrentPlaybackStatus | null>(CURRENT_PLAYBACK_STATUS_CHANGED_EVENT, (event) => {
     handleStatus(event.payload)
   })
+}
+
+/** 读取 Windows 当前媒体会话声明的控制能力。 */
+export function getCurrentPlaybackCapabilities(): Promise<CurrentPlaybackCapabilities | null> {
+  return invoke<CurrentPlaybackCapabilities | null>('get_current_playback_capabilities')
+}
+
+/** 订阅 Windows 当前媒体会话控制能力变化。 */
+export function listenToCurrentPlaybackCapabilitiesChanges(
+  handleCapabilities: (capabilities: CurrentPlaybackCapabilities | null) => void,
+): Promise<UnlistenFn> {
+  return listen<CurrentPlaybackCapabilities | null>(
+    CURRENT_PLAYBACK_CAPABILITIES_CHANGED_EVENT,
+    (event) => {
+      handleCapabilities(event.payload)
+    },
+  )
 }

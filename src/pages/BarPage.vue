@@ -4,17 +4,22 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import {
   getCurrentMediaMetadata,
+  getCurrentPlaybackCapabilities,
   getCurrentPlaybackStatus,
   listenToCurrentMediaMetadataChanges,
+  listenToCurrentPlaybackCapabilitiesChanges,
   listenToCurrentPlaybackStatusChanges,
   type CurrentMediaMetadata,
+  type CurrentPlaybackCapabilities,
   type CurrentPlaybackStatus,
 } from '@/lib/media-api'
 
 const mediaMetadataStatus = ref('正在读取媒体信息')
 const mediaMetadataDetails = ref('')
 const playbackStatusText = ref('状态读取中')
+const playbackCapabilitiesText = ref('能力读取中')
 let stopMediaMetadataListener: UnlistenFn | undefined
+let stopPlaybackCapabilitiesListener: UnlistenFn | undefined
 let stopPlaybackStatusListener: UnlistenFn | undefined
 let hasUnmounted = false
 
@@ -46,6 +51,26 @@ function showCurrentPlaybackStatus(status: CurrentPlaybackStatus | null) {
   playbackStatusText.value = status ? playbackStatusLabels[status] : '无播放状态'
 }
 
+/** 将播放器声明为可用的控制能力汇总为单行文本。 */
+function showCurrentPlaybackCapabilities(capabilities: CurrentPlaybackCapabilities | null) {
+  if (!capabilities) {
+    playbackCapabilitiesText.value = '无控制能力'
+    return
+  }
+
+  const enabledCapabilities = [
+    capabilities.canPlay && '播放',
+    capabilities.canPause && '暂停',
+    capabilities.canPrevious && '上一曲',
+    capabilities.canNext && '下一曲',
+    capabilities.canSeek && 'Seek',
+  ].filter(Boolean)
+
+  playbackCapabilitiesText.value = enabledCapabilities.length
+    ? enabledCapabilities.join('/')
+    : '无可用控制'
+}
+
 /** 从 Rust 主动读取一次 Windows 当前会话元数据。 */
 async function loadCurrentMediaMetadata() {
   try {
@@ -62,6 +87,15 @@ async function loadCurrentPlaybackStatus() {
     showCurrentPlaybackStatus(await getCurrentPlaybackStatus())
   } catch {
     playbackStatusText.value = '状态读取失败'
+  }
+}
+
+/** 从 Rust 主动读取一次 Windows 当前会话控制能力。 */
+async function loadCurrentPlaybackCapabilities() {
+  try {
+    showCurrentPlaybackCapabilities(await getCurrentPlaybackCapabilities())
+  } catch {
+    playbackCapabilitiesText.value = '能力读取失败'
   }
 }
 
@@ -98,12 +132,32 @@ async function startPlaybackStatusListener() {
   }
 }
 
+/** 先建立控制能力订阅，再读取当前值，避免初始化期间遗漏变化。 */
+async function startPlaybackCapabilitiesListener() {
+  try {
+    const stopListener = await listenToCurrentPlaybackCapabilitiesChanges(
+      showCurrentPlaybackCapabilities,
+    )
+    if (hasUnmounted) {
+      stopListener()
+      return
+    }
+
+    stopPlaybackCapabilitiesListener = stopListener
+    await loadCurrentPlaybackCapabilities()
+  } catch {
+    playbackCapabilitiesText.value = '能力监听失败'
+  }
+}
+
 onMounted(startMediaMetadataListener)
+onMounted(startPlaybackCapabilitiesListener)
 onMounted(startPlaybackStatusListener)
 
 onBeforeUnmount(() => {
   hasUnmounted = true
   stopMediaMetadataListener?.()
+  stopPlaybackCapabilitiesListener?.()
   stopPlaybackStatusListener?.()
 })
 </script>
@@ -115,7 +169,7 @@ onBeforeUnmount(() => {
       class="bg-secondary text-secondary-foreground flex h-full w-full items-center justify-center rounded-md border px-3 text-sm font-medium"
     >
       <span class="truncate" :title="mediaMetadataDetails">
-        {{ playbackStatusText }} · {{ mediaMetadataStatus }}
+        {{ playbackStatusText }} · {{ mediaMetadataStatus }} · {{ playbackCapabilitiesText }}
       </span>
     </section>
   </main>

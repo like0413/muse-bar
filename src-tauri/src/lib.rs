@@ -60,6 +60,7 @@ pub fn run() {
             commands::diagnostics::get_taskbar_identity,
             commands::diagnostics::get_taskbar_rect,
             commands::media::get_current_media_metadata,
+            commands::media::get_current_playback_capabilities,
             commands::media::get_current_playback_status,
             commands::media::get_media_session_source_app_ids,
             commands::media::is_system_media_manager_initialized,
