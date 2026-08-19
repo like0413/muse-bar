@@ -63,7 +63,11 @@ export interface SelectedMediaSession {
   reason: MediaSelectionReason
 }
 
-export type ControlAction = 'togglePlayPause' | 'previous' | 'next'
+export type ControlAction =
+  | { type: 'togglePlayPause' }
+  | { type: 'previous' }
+  | { type: 'next' }
+  | { type: 'seek'; positionMs: number }
 
 export type MediaControlErrorCode = 'noSession' | 'unsupported' | 'rejected' | 'windowsApi'
 

@@ -471,7 +471,7 @@ impl SystemMediaManager {
         Ok(selection)
     }
 
-    /// 对 Bar 当前真正观察的会话执行播放、暂停或切歌操作。
+    /// 对 Bar 当前真正观察的会话执行播放、暂停、切歌或进度跳转。
     pub(crate) fn control_media(&self, action: ControlAction) -> Result<(), MediaControlError> {
         let session = self
             .observed_session()

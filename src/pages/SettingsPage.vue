@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import type { UnlistenFn } from '@tauri-apps/api/event'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
+import { Slider } from '@/components/ui/slider'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import {
+  controlMedia,
   getCurrentMediaSnapshot,
   getMediaSessionIdentities,
   getMediaSessionActivities,
@@ -39,6 +41,10 @@ const mediaSnapshot = ref<MediaSnapshot | null>(null)
 const mediaSnapshotError = ref<string>()
 const mediaSessionIdentities = ref<MediaSessionIdentity[]>([])
 const mediaSessionActivities = ref<MediaSessionActivity[]>([])
+const seekValue = ref<number[]>([0])
+const isSeekPreviewing = ref(false)
+const isSeekPending = ref(false)
+const seekFeedback = ref('')
 let stopMediaSnapshotListener: UnlistenFn | undefined
 let stopTimelineListener: UnlistenFn | undefined
 let stopMediaSessionIdentityListener: UnlistenFn | undefined
@@ -48,6 +54,15 @@ let hasUnmounted = false
 const currentPosition = computed(() => readTaskbarPosition(settings.value))
 const currentColorMode = computed(() => readColorMode(settings.value))
 const mediaSnapshotJson = computed(() => serializeMediaSnapshot(mediaSnapshot.value))
+const seekMinimum = computed(() => mediaSnapshot.value?.timeline?.minSeekMs ?? 0)
+const seekMaximum = computed(() => {
+  const timeline = mediaSnapshot.value?.timeline
+  if (!timeline) return 0
+  return timeline.maxSeekMs > timeline.minSeekMs ? timeline.maxSeekMs : timeline.endMs
+})
+const canSeek = computed(
+  () => Boolean(mediaSnapshot.value?.capabilities.canSeek) && seekMaximum.value > seekMinimum.value,
+)
 
 const positionOptions = [
   { value: 'left', label: '靠左' },
@@ -90,6 +105,46 @@ function serializeMediaSnapshot(snapshot: MediaSnapshot | null): string {
 /** 将 Rust 返回的 Unix 毫秒时间戳转换为本地可读时间。 */
 function formatStartedAt(startedAtUnixMs: number): string {
   return new Date(startedAtUnixMs).toLocaleString()
+}
+
+/** 将毫秒格式化为设置页验证 seek 时易读的时长。 */
+function formatDuration(milliseconds: number): string {
+  const safeMilliseconds = Math.max(0, milliseconds)
+  const totalSeconds = Math.floor(safeMilliseconds / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`
+}
+
+/** 从 Tauri 的未知拒绝值中提取可读的结构化控制错误。 */
+function readControlErrorMessage(error: unknown): string {
+  if (typeof error === 'object' && error && 'message' in error) return String(error.message)
+  return String(error)
+}
+
+/** 记录滑块预览位置；拖动期间不让播放器的时间轴事件把手柄拉回去。 */
+function handleSeekPreview(value: number[]): void {
+  seekValue.value = value
+  isSeekPreviewing.value = true
+  seekFeedback.value = ''
+}
+
+/** 用户释放滑块后只提交一次 seek，避免拖动时连续调用播放器接口。 */
+async function commitSeek(value: number[]): Promise<void> {
+  isSeekPreviewing.value = false
+  const positionMs = value[0]
+  if (!canSeek.value || positionMs === undefined || isSeekPending.value) return
+
+  isSeekPending.value = true
+  seekFeedback.value = ''
+  try {
+    await controlMedia({ type: 'seek', positionMs: Math.round(positionMs) })
+    seekFeedback.value = `已请求跳转到 ${formatDuration(positionMs)}`
+  } catch (error) {
+    seekFeedback.value = `跳转失败：${readControlErrorMessage(error)}`
+  } finally {
+    isSeekPending.value = false
+  }
 }
 
 /** 加载共享运行状态，并保留可直接诊断的命令错误。 */
@@ -227,6 +282,14 @@ onMounted(() => {
   void startMediaSessionActivityListener()
 })
 
+watch(
+  () => [mediaSnapshot.value?.sessionKey, mediaSnapshot.value?.timeline?.positionMs] as const,
+  ([, positionMs]) => {
+    if (!isSeekPreviewing.value) seekValue.value = [positionMs ?? 0]
+  },
+  { immediate: true },
+)
+
 onBeforeUnmount(() => {
   hasUnmounted = true
   stopMediaSnapshotListener?.()
@@ -237,7 +300,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="bg-background flex min-h-screen flex-col justify-center gap-1 p-6">
+  <main class="bg-background flex min-h-screen flex-col justify-start gap-1 p-6">
     <p class="text-muted-foreground text-sm">Configuration surface</p>
     <h1 class="text-2xl font-semibold">Muse Bar Settings</h1>
     <p class="text-sm">
@@ -306,8 +369,41 @@ onBeforeUnmount(() => {
       <p v-if="mediaSnapshotError" role="alert" class="text-destructive text-sm">
         {{ mediaSnapshotError }}
       </p>
+      <div class="bg-muted flex flex-col gap-3 rounded-md border p-3">
+        <div>
+          <h3 class="font-medium">Seek 验证</h3>
+          <p class="text-muted-foreground text-sm">拖动时只预览，释放后向播放器提交一次。</p>
+        </div>
+        <Slider
+          :model-value="seekValue"
+          :min="seekMinimum"
+          :max="seekMaximum"
+          :step="1000"
+          :disabled="!canSeek || isSeekPending"
+          aria-label="跳转播放位置"
+          @update:model-value="handleSeekPreview"
+          @value-commit="commitSeek"
+        />
+        <div class="text-muted-foreground flex justify-between text-xs tabular-nums">
+          <span>{{ formatDuration(seekMinimum) }}</span>
+          <span>{{ formatDuration(seekValue[0] ?? 0) }}</span>
+          <span>{{ formatDuration(seekMaximum) }}</span>
+        </div>
+        <p
+          v-if="seekFeedback"
+          :class="
+            seekFeedback.startsWith('跳转失败') ? 'text-destructive' : 'text-muted-foreground'
+          "
+          class="text-sm"
+        >
+          {{ seekFeedback }}
+        </p>
+        <p v-else-if="!canSeek" class="text-muted-foreground text-sm">
+          当前会话未提供可用的 seek 能力或有效时间轴。
+        </p>
+      </div>
       <pre
-        v-else
+        v-if="!mediaSnapshotError"
         class="bg-muted max-h-72 overflow-auto rounded-md border p-3 text-xs whitespace-pre-wrap"
         >{{ mediaSnapshotJson }}</pre>
       <h3 class="mt-2 font-medium">检测到的媒体会话</h3>

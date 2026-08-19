@@ -46,7 +46,7 @@ pub fn refresh_selected_media_session(
     state.refresh_selected_media_session(&app)
 }
 
-/// 对 Bar 当前选择的媒体会话执行播放、暂停、上一曲或下一曲。
+/// 对 Bar 当前选择的媒体会话执行播放、暂停、切歌或进度跳转。
 #[tauri::command]
 pub fn control_media(
     state: State<'_, SystemMediaManager>,

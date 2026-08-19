@@ -41,6 +41,7 @@ const controlError = ref('')
 const isControlPending = ref(false)
 const currentPlaybackStatus = ref<CurrentPlaybackStatus | null>(null)
 const currentPlaybackCapabilities = ref<CurrentPlaybackCapabilities | null>(null)
+const currentTimeline = ref<CurrentTimeline | null>(null)
 let stopMediaMetadataListener: UnlistenFn | undefined
 let stopPlaybackCapabilitiesListener: UnlistenFn | undefined
 let stopPlaybackStatusListener: UnlistenFn | undefined
@@ -93,6 +94,16 @@ const canTogglePlayPause = computed(() => {
   const capabilities = currentPlaybackCapabilities.value
   if (!capabilities) return false
   return isPlaying.value ? capabilities.canPause : capabilities.canPlay
+})
+const progressPercentage = computed(() => {
+  const timeline = currentTimeline.value
+  if (!timeline) return 0
+
+  const duration = timeline.endMs - timeline.startMs
+  if (duration <= 0) return 0
+
+  const elapsed = timeline.positionMs - timeline.startMs
+  return Math.min(100, Math.max(0, (elapsed / duration) * 100))
 })
 
 /** 将当前会话元数据转换为 Bar 的文本和完整悬停说明。 */
@@ -203,6 +214,7 @@ function formatDuration(milliseconds: number) {
 
 /** 将有效时间轴转换为当前位置、总时长和诊断文本。 */
 function showCurrentTimeline(timeline: CurrentTimeline | null) {
+  currentTimeline.value = timeline
   if (!timeline) {
     timelineText.value = '无有效时间轴'
     timelineDetails.value = timelineText.value
@@ -398,7 +410,7 @@ onBeforeUnmount(() => {
           aria-label="上一曲"
           title="上一曲"
           :disabled="isControlPending || !currentPlaybackCapabilities?.canPrevious"
-          @click="performControl('previous')"
+          @click="performControl({ type: 'previous' })"
         >
           <SkipBackIcon />
         </Button>
@@ -409,7 +421,7 @@ onBeforeUnmount(() => {
           :aria-label="isPlaying ? '暂停' : '播放'"
           :title="isPlaying ? '暂停' : '播放'"
           :disabled="isControlPending || !canTogglePlayPause"
-          @click="performControl('togglePlayPause')"
+          @click="performControl({ type: 'togglePlayPause' })"
         >
           <PauseIcon v-if="isPlaying" />
           <PlayIcon v-else />
@@ -421,15 +433,15 @@ onBeforeUnmount(() => {
           aria-label="下一曲"
           title="下一曲"
           :disabled="isControlPending || !currentPlaybackCapabilities?.canNext"
-          @click="performControl('next')"
+          @click="performControl({ type: 'next' })"
         >
           <SkipForwardIcon />
         </Button>
       </ButtonGroup>
       <span
         aria-hidden="true"
-        class="absolute inset-x-0 bottom-0 h-0.5"
-        :style="{ backgroundColor: accentColor }"
+        class="absolute bottom-0 left-0 h-0.5 transition-[width] duration-150"
+        :style="{ backgroundColor: accentColor, width: `${progressPercentage}%` }"
       />
     </section>
   </main>
