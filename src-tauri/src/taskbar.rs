@@ -1,8 +1,9 @@
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
 
 use crate::platform::windows::{
-    w, CloseHandle, FindWindowW, GetWindowThreadProcessId, OpenProcess, QueryFullProcessImageNameW,
-    HANDLE, HWND, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PWSTR,
+    w, CloseHandle, FindWindowW, GetWindowRect, GetWindowThreadProcessId, OpenProcess,
+    QueryFullProcessImageNameW, HANDLE, HWND, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, PWSTR, RECT,
 };
 
 const PROCESS_PATH_BUFFER_LENGTH: usize = 32_768;
@@ -12,6 +13,49 @@ const PROCESS_PATH_BUFFER_LENGTH: usize = 32_768;
 pub struct TaskbarIdentity {
     handle: HWND,
     explorer_process_id: u32,
+}
+
+/// 主任务栏在屏幕坐标系中的物理像素矩形。
+#[derive(Debug, Clone, Copy)]
+pub struct TaskbarRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    width: i32,
+    height: i32,
+}
+
+impl TaskbarRect {
+    /// 返回矩形左边界的屏幕横坐标。
+    pub fn left(&self) -> i32 {
+        self.left
+    }
+
+    /// 返回矩形上边界的屏幕纵坐标。
+    pub fn top(&self) -> i32 {
+        self.top
+    }
+
+    /// 返回矩形右边界的屏幕横坐标。
+    pub fn right(&self) -> i32 {
+        self.right
+    }
+
+    /// 返回矩形下边界的屏幕纵坐标。
+    pub fn bottom(&self) -> i32 {
+        self.bottom
+    }
+
+    /// 返回任务栏的物理像素宽度。
+    pub fn width(&self) -> i32 {
+        self.width
+    }
+
+    /// 返回任务栏的物理像素高度。
+    pub fn height(&self) -> i32 {
+        self.height
+    }
 }
 
 impl TaskbarIdentity {
@@ -66,6 +110,34 @@ pub fn find_main_taskbar() -> Result<TaskbarIdentity, String> {
     Ok(TaskbarIdentity {
         handle,
         explorer_process_id: process_id,
+    })
+}
+
+/// 读取已验证任务栏的屏幕矩形，并计算物理像素宽高。
+pub fn read_taskbar_rect(taskbar: &TaskbarIdentity) -> Result<TaskbarRect, String> {
+    let mut native_rect = RECT::default();
+    unsafe { GetWindowRect(taskbar.handle(), &mut native_rect) }
+        .map_err(|error| format!("无法读取主任务栏矩形：{error}"))?;
+
+    let width = native_rect
+        .right
+        .checked_sub(native_rect.left)
+        .ok_or_else(|| "主任务栏宽度超出可表示范围".to_owned())?;
+    let height = native_rect
+        .bottom
+        .checked_sub(native_rect.top)
+        .ok_or_else(|| "主任务栏高度超出可表示范围".to_owned())?;
+    if width <= 0 || height <= 0 {
+        return Err(format!("主任务栏矩形无效：{native_rect:?}"));
+    }
+
+    Ok(TaskbarRect {
+        left: native_rect.left,
+        top: native_rect.top,
+        right: native_rect.right,
+        bottom: native_rect.bottom,
+        width,
+        height,
     })
 }
 

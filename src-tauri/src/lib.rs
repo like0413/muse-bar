@@ -35,6 +35,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::diagnostics::get_taskbar_identity,
+            commands::diagnostics::get_taskbar_rect,
             commands::runtime::get_runtime_info,
             commands::settings::get_settings,
             commands::settings::update_settings
