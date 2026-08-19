@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { Music2Icon, PauseIcon, PlayIcon, SkipBackIcon, SkipForwardIcon } from '@lucide/vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { ButtonGroup, ButtonGroupSeparator } from '@/components/ui/button-group'
+import { reportBarContentWidth } from '@/lib/bar-layout-api'
 import {
   controlMedia,
   getCurrentMediaMetadata,
@@ -25,6 +26,7 @@ import {
   type ControlAction,
   type MediaSelectionReason,
 } from '@/lib/media-api'
+import { listenToSettingsChanges } from '@/lib/settings-api'
 import { openSettingsWindow } from '@/lib/settings-window'
 
 const mediaMetadataStatus = ref('正在读取媒体信息')
@@ -39,16 +41,25 @@ const timelineDetails = ref('')
 const settingsWindowError = ref('')
 const mediaSelectionText = ref('')
 const controlError = ref('')
+const barWidthDetails = ref('宽度：等待测量')
 const isControlPending = ref(false)
 const currentPlaybackStatus = ref<CurrentPlaybackStatus | null>(null)
 const currentPlaybackCapabilities = ref<CurrentPlaybackCapabilities | null>(null)
 const currentTimeline = ref<CurrentTimeline | null>(null)
+const barPageElement = ref<HTMLElement>()
+const barSurfaceElement = ref<HTMLElement>()
+const titleElement = ref<HTMLElement>()
+const artistElement = ref<HTMLElement>()
 let stopMediaMetadataListener: UnlistenFn | undefined
 let stopPlaybackCapabilitiesListener: UnlistenFn | undefined
 let stopPlaybackStatusListener: UnlistenFn | undefined
 let stopTimelineListener: UnlistenFn | undefined
 let stopMediaActivityListener: UnlistenFn | undefined
+let stopSettingsListener: UnlistenFn | undefined
 let hasUnmounted = false
+let barResizeObserver: ResizeObserver | undefined
+let barMeasurementFrame: number | undefined
+let lastReportedNaturalWidth = 0
 
 const mediaDetails = computed(() =>
   [
@@ -57,6 +68,7 @@ const mediaDetails = computed(() =>
     timelineDetails.value,
     playbackCapabilitiesText.value && `控制能力：${playbackCapabilitiesText.value}`,
     mediaSelectionText.value,
+    barWidthDetails.value,
     settingsWindowError.value,
     controlError.value,
   ]
@@ -108,6 +120,7 @@ function showCurrentMediaMetadata(metadata: CurrentMediaMetadata | null) {
     currentArtist.value = ''
     artworkDataUrl.value = null
     accentColor.value = '#0078D4'
+    void nextTick(scheduleBarMeasurement)
     return
   }
 
@@ -118,6 +131,118 @@ function showCurrentMediaMetadata(metadata: CurrentMediaMetadata | null) {
   mediaMetadataDetails.value = `${metadata.sourceAppId}\n标题：${title}\n歌手：${metadata.artist || '未知歌手'}`
   artworkDataUrl.value = metadata.artworkDataUrl
   accentColor.value = metadata.accentColor || '#0078D4'
+  void nextTick(scheduleBarMeasurement)
+}
+
+/** 将 getComputedStyle 返回的像素文本安全转换为数值。 */
+function readCssPixels(value: string): number {
+  const pixels = Number.parseFloat(value)
+  return Number.isFinite(pixels) ? pixels : 0
+}
+
+/** 计算元素左右方向的内边距与边框总宽度。 */
+function readHorizontalInsets(element: HTMLElement): number {
+  const style = window.getComputedStyle(element)
+  return (
+    readCssPixels(style.paddingLeft) +
+    readCssPixels(style.paddingRight) +
+    readCssPixels(style.borderLeftWidth) +
+    readCssPixels(style.borderRightWidth)
+  )
+}
+
+/** 使用 DOM Range 读取文本本身的渲染宽度，不受当前 flex 容器宽度影响。 */
+function measureTextContentWidth(element: HTMLElement | undefined): number {
+  if (!element || !element.textContent) return 0
+
+  const range = document.createRange()
+  range.selectNodeContents(element)
+  return range.getBoundingClientRect().width
+}
+
+/** 汇总封面、自然文本、控制按钮、间距和容器边界所需的完整逻辑宽度。 */
+function measureBarNaturalWidth(): number | undefined {
+  const page = barPageElement.value
+  const surface = barSurfaceElement.value
+  const title = titleElement.value
+  if (!page || !surface || !title) return undefined
+
+  const artwork = surface.querySelector<HTMLElement>('[data-slot="avatar"]')
+  const controls = surface.querySelector<HTMLElement>('[data-slot="button-group"]')
+  if (!artwork || !controls) return undefined
+
+  const surfaceStyle = window.getComputedStyle(surface)
+  const gap = readCssPixels(surfaceStyle.columnGap || surfaceStyle.gap)
+  const textWidth = Math.max(
+    measureTextContentWidth(title),
+    measureTextContentWidth(artistElement.value),
+  )
+
+  return (
+    readHorizontalInsets(page) +
+    readHorizontalInsets(surface) +
+    artwork.getBoundingClientRect().width +
+    controls.getBoundingClientRect().width +
+    textWidth +
+    gap * 2
+  )
+}
+
+/** 在下一帧合并连续的布局变化，并把新的自然宽度上报给 Rust。 */
+function scheduleBarMeasurement(): void {
+  if (hasUnmounted || barMeasurementFrame !== undefined) return
+
+  barMeasurementFrame = window.requestAnimationFrame(() => {
+    barMeasurementFrame = undefined
+    const naturalWidth = measureBarNaturalWidth()
+    if (naturalWidth === undefined || Math.abs(naturalWidth - lastReportedNaturalWidth) < 0.5) {
+      return
+    }
+
+    lastReportedNaturalWidth = naturalWidth
+    void reportBarContentWidth(naturalWidth)
+      .then((measurement) => {
+        barWidthDetails.value = `宽度：自然 ${measurement.naturalWidth.toFixed(1)}，目标 ${measurement.targetWidth}，范围 ${measurement.minimumWidth}–${measurement.maximumWidth}`
+      })
+      .catch((error: unknown) => {
+        barWidthDetails.value = `宽度测量上报失败：${error instanceof Error ? error.message : String(error)}`
+      })
+  })
+}
+
+/** 观察 Bar 各区域尺寸，并在字体完成加载后补做一次自然宽度测量。 */
+function startBarMeasurement(): void {
+  const surface = barSurfaceElement.value
+  const title = titleElement.value
+  if (!surface || !title) return
+
+  barResizeObserver = new ResizeObserver(scheduleBarMeasurement)
+  barResizeObserver.observe(surface)
+  barResizeObserver.observe(title)
+  if (artistElement.value) barResizeObserver.observe(artistElement.value)
+  scheduleBarMeasurement()
+
+  void document.fonts.ready.then(() => {
+    if (!hasUnmounted) scheduleBarMeasurement()
+  })
+}
+
+/** 设置边界变化时强制重新上报同一自然宽度，让 Rust 计算新的限制结果。 */
+async function startBarSettingsListener(): Promise<void> {
+  try {
+    const stopListener = await listenToSettingsChanges(() => {
+      lastReportedNaturalWidth = 0
+      scheduleBarMeasurement()
+    })
+    if (hasUnmounted) {
+      stopListener()
+      return
+    }
+
+    stopSettingsListener = stopListener
+  } catch (error) {
+    barWidthDetails.value = `宽度设置监听失败：${error instanceof Error ? error.message : String(error)}`
+  }
 }
 
 /** 响应 Bar 右键操作，打开已有设置窗口或创建一个新的设置窗口。 */
@@ -349,6 +474,8 @@ onMounted(startPlaybackCapabilitiesListener)
 onMounted(startPlaybackStatusListener)
 onMounted(startTimelineListener)
 onMounted(startMediaSelectionListener)
+onMounted(startBarMeasurement)
+onMounted(startBarSettingsListener)
 
 onBeforeUnmount(() => {
   hasUnmounted = true
@@ -357,14 +484,21 @@ onBeforeUnmount(() => {
   stopPlaybackStatusListener?.()
   stopTimelineListener?.()
   stopMediaActivityListener?.()
+  stopSettingsListener?.()
+  barResizeObserver?.disconnect()
+  if (barMeasurementFrame !== undefined) window.cancelAnimationFrame(barMeasurementFrame)
 })
 </script>
 
 <template>
-  <main class="flex h-screen w-screen items-center justify-center bg-transparent p-1">
+  <main
+    ref="barPageElement"
+    class="flex h-screen w-screen items-center justify-center bg-transparent"
+  >
     <section
+      ref="barSurfaceElement"
       aria-label="Muse Bar"
-      class="bg-secondary text-secondary-foreground relative flex h-full w-full items-center gap-2 overflow-hidden rounded-md border px-2 text-sm font-medium"
+      class="bg-secondary text-secondary-foreground relative flex h-full w-full items-center gap-2 overflow-hidden border px-2 text-sm font-medium"
       @contextmenu.prevent="handleOpenSettings"
     >
       <Avatar class="size-8 rounded-md border">
@@ -374,8 +508,12 @@ onBeforeUnmount(() => {
         </AvatarFallback>
       </Avatar>
       <div class="flex min-w-0 flex-1 flex-col justify-center" :title="mediaDetails">
-        <p class="truncate text-sm font-medium">{{ displayTitle }}</p>
-        <p v-if="currentArtist" class="text-muted-foreground truncate text-xs font-normal">
+        <p ref="titleElement" class="truncate text-sm font-medium">{{ displayTitle }}</p>
+        <p
+          v-if="currentArtist"
+          ref="artistElement"
+          class="text-muted-foreground truncate text-xs font-normal"
+        >
           {{ currentArtist }}
         </p>
       </div>

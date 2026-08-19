@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Runtime};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
+const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 7;
+const DEFAULT_MIN_WIDTH: u32 = 240;
+const DEFAULT_MAX_WIDTH: u32 = 380;
 
 /// Bar 窗口与 Windows 任务栏之间的宿主模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +58,8 @@ pub enum ColorMode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppSettings {
+    #[serde(default = "initial_settings_schema_version")]
+    pub schema_version: u32,
     pub window_mode: WindowMode,
     pub position: TaskbarPosition,
     pub min_width: u32,
@@ -69,10 +74,11 @@ impl Default for AppSettings {
     /// 返回首版约定的稳定默认设置。
     fn default() -> Self {
         Self {
+            schema_version: CURRENT_SETTINGS_SCHEMA_VERSION,
             window_mode: WindowMode::Auto,
             position: TaskbarPosition::Right,
-            min_width: 320,
-            max_width: 560,
+            min_width: DEFAULT_MIN_WIDTH,
+            max_width: DEFAULT_MAX_WIDTH,
             manual_offset: 0,
             progress_style: ProgressStyle::Underline,
             color_mode: ColorMode::System,
@@ -92,8 +98,14 @@ impl AppSettings {
             Err(error) => return Err(error.into()),
         };
 
-        match serde_json::from_str(&contents) {
-            Ok(settings) => Ok(settings),
+        match serde_json::from_str::<Self>(&contents) {
+            Ok(mut settings) => {
+                if settings.migrate() {
+                    // 迁移写回失败不应阻止启动；本次运行仍使用迁移后的内存设置。
+                    let _ = settings.save(app);
+                }
+                Ok(settings)
+            }
             Err(_) => {
                 preserve_corrupted_file(&settings_path);
                 Ok(Self::default())
@@ -121,6 +133,24 @@ impl AppSettings {
 
         Ok(())
     }
+
+    /// 按设置版本执行一次性迁移，并返回本次是否修改了内容。
+    fn migrate(&mut self) -> bool {
+        if self.schema_version >= CURRENT_SETTINGS_SCHEMA_VERSION {
+            return false;
+        }
+
+        // 宽度范围属于当前版本的产品约束，升级后应直接采用新版值；其余用户设置保持不变。
+        self.min_width = DEFAULT_MIN_WIDTH;
+        self.max_width = DEFAULT_MAX_WIDTH;
+        self.schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
+        true
+    }
+}
+
+/// 配置文件缺少版本字段时，将其视为第一版结构，以便执行升级迁移。
+fn initial_settings_schema_version() -> u32 {
+    1
 }
 
 /// 返回当前应用专属配置目录中的设置文件路径。

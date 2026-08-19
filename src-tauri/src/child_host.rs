@@ -1,4 +1,11 @@
-use std::{thread, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    thread,
+    time::Duration,
+};
 
 use tauri::{Runtime, Window};
 
@@ -6,8 +13,8 @@ use crate::platform::windows::{
     GetCurrentProcessId, GetParent, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId,
     IsWindow, ScreenToClient, SetLayeredWindowAttributes, SetParent, SetWindowLongPtrW,
     SetWindowPos, COLORREF, GWL_EXSTYLE, GWL_STYLE, HWND, HWND_TOP, LWA_ALPHA, POINT, RECT,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_SHOWWINDOW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT, WS_POPUP,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, WS_CHILD, WS_CLIPCHILDREN,
+    WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 use crate::taskbar::{TaskbarIdentity, TaskbarRect};
@@ -17,6 +24,8 @@ const STABILIZATION_DELAYS: [Duration; 3] = [
     Duration::from_millis(300),
     Duration::from_millis(700),
 ];
+const WIDTH_ANIMATION_STEPS: i32 = 12;
+const WIDTH_ANIMATION_STEP_DURATION: Duration = Duration::from_millis(15);
 
 /// Child 挂载后提供给 WebView 创建流程的物理像素尺寸。
 pub(crate) struct ChildHostSize {
@@ -60,6 +69,107 @@ pub(crate) fn attach_window<R: Runtime>(
         width: u32::try_from(width).map_err(|_| "Bar 宽度无法转换为物理像素".to_owned())?,
         height: u32::try_from(height).map_err(|_| "Bar 高度无法转换为物理像素".to_owned())?,
     })
+}
+
+/// 在保持 Child 当前中心点和高度的前提下平滑调整原生宿主宽度。
+/// Child WebView 已启用自动尺寸同步，无需在动画中重复发送尺寸消息。
+pub(crate) fn animate_window_width<R: Runtime>(
+    bar_window: Window<R>,
+    target_width: i32,
+    animation_revision: u64,
+    latest_animation_revision: Arc<AtomicU64>,
+) -> Result<(), String> {
+    if target_width <= 0 {
+        return Err("Bar 目标物理宽度必须大于零".to_owned());
+    }
+
+    let bar_handle = bar_window
+        .hwnd()
+        .map_err(|error| format!("无法取得 Bar 窗口句柄：{error}"))?;
+    let taskbar_handle = unsafe { GetParent(bar_handle) }
+        .map_err(|error| format!("无法读取 Bar 当前父窗口：{error}"))?;
+    let mut bar_rect = RECT::default();
+    unsafe { GetWindowRect(bar_handle, &mut bar_rect) }
+        .map_err(|error| format!("无法读取 Bar 当前矩形：{error}"))?;
+    let start_width = bar_rect
+        .right
+        .checked_sub(bar_rect.left)
+        .ok_or_else(|| "Bar 当前宽度超出可表示范围".to_owned())?;
+    let height = bar_rect
+        .bottom
+        .checked_sub(bar_rect.top)
+        .ok_or_else(|| "Bar 当前高度超出可表示范围".to_owned())?;
+    if start_width <= 0 || height <= 0 {
+        return Err(format!("Bar 当前矩形无效：{bar_rect:?}"));
+    }
+
+    let mut client_position = POINT {
+        x: bar_rect.left,
+        y: bar_rect.top,
+    };
+    if !unsafe { ScreenToClient(taskbar_handle, &mut client_position) }.as_bool() {
+        return Err("无法将 Bar 当前位置转换为任务栏客户区坐标".to_owned());
+    }
+    let center_x = client_position
+        .x
+        .checked_add(start_width / 2)
+        .ok_or_else(|| "Bar 中心横坐标超出可表示范围".to_owned())?;
+    let bar_handle_value = bar_handle.0 as usize;
+    let taskbar_handle_value = taskbar_handle.0 as usize;
+
+    thread::Builder::new()
+        .name("muse-bar-width-animation".to_owned())
+        .spawn(move || {
+            for step in 1..=WIDTH_ANIMATION_STEPS {
+                thread::sleep(WIDTH_ANIMATION_STEP_DURATION);
+                if latest_animation_revision.load(Ordering::Acquire) != animation_revision {
+                    return;
+                }
+
+                let progress = f64::from(step) / f64::from(WIDTH_ANIMATION_STEPS);
+                let eased_progress = 1.0 - (1.0 - progress).powi(3);
+                let width_delta = f64::from(target_width - start_width) * eased_progress;
+                let width = start_width + width_delta.round() as i32;
+                let x = center_x - width / 2;
+                let scheduled_revision = Arc::clone(&latest_animation_revision);
+                let scheduled = bar_window.run_on_main_thread(move || {
+                    if scheduled_revision.load(Ordering::Acquire) != animation_revision {
+                        return;
+                    }
+
+                    // HWND 不能跨线程发送，因此只传递数值，并在主线程恢复句柄类型。
+                    let bar_handle = HWND(bar_handle_value as *mut _);
+                    let taskbar_handle = HWND(taskbar_handle_value as *mut _);
+                    let parent_matches = unsafe { GetParent(bar_handle) }
+                        .map(|parent| parent == taskbar_handle)
+                        .unwrap_or(false);
+                    if !unsafe { IsWindow(Some(bar_handle)) }.as_bool() || !parent_matches {
+                        return;
+                    }
+
+                    let resized = unsafe {
+                        SetWindowPos(
+                            bar_handle,
+                            None,
+                            x,
+                            client_position.y,
+                            width,
+                            height,
+                            SWP_NOACTIVATE | SWP_NOZORDER,
+                        )
+                    };
+                    if let Err(error) = resized {
+                        log::warn!("无法调整 Bar 原生宿主宽度：{error}");
+                    }
+                });
+                if let Err(error) = scheduled {
+                    log::warn!("无法将 Bar 宽度动画提交到主线程：{error}");
+                    return;
+                }
+            }
+        })
+        .map(|_| ())
+        .map_err(|error| format!("无法启动 Bar 宽度动画线程：{error}"))
 }
 
 /// 在挂载任务栏前，将 Tauri 顶层宿主转换为可交互的分层 Child 窗口。
@@ -193,6 +303,14 @@ fn schedule_position_stabilization<R: Runtime>(
                         .map(|parent| parent == taskbar_handle)
                         .unwrap_or(false);
                     if !unsafe { IsWindow(Some(bar_handle)) }.as_bool() || !parent_matches {
+                        return;
+                    }
+
+                    // 内容测量可能已启动正式宽度动画；此时不能再用创建时宽度覆盖新结果。
+                    if read_window_size(bar_handle)
+                        .map(|(current_width, _)| current_width != width)
+                        .unwrap_or(true)
+                    {
                         return;
                     }
 

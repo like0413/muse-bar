@@ -141,12 +141,26 @@ fn recover_bar_once(app: &AppHandle) -> Result<(), String> {
     if bar_recreated {
         let webview_builder = WebviewBuilder::from_config(config);
         let webview_size = PhysicalSize::new(host_size.width, host_size.height);
-        if let Err(error) =
-            bar_window.add_child(webview_builder, PhysicalPosition::new(0, 0), webview_size)
-        {
+        let bar_webview = bar_window
+            .add_child(webview_builder, PhysicalPosition::new(0, 0), webview_size)
+            .map_err(|error| {
+                let _ = bar_window.destroy();
+                format!("无法在 Bar 宿主内创建 Child WebView：{error}")
+            })?;
+
+        // 宽度动画只调整原生宿主，由 Tauri 按父窗口客户区同步 Child WebView，
+        // 避免两个独立的尺寸消息队列产生短暂空隙或错误的自动缩放比例。
+        if let Err(error) = bar_webview.set_auto_resize(true) {
             let _ = bar_window.destroy();
-            return Err(format!("无法在 Bar 宿主内创建 Child WebView：{error}"));
+            return Err(format!("无法启用 Bar WebView 自动尺寸同步：{error}"));
         }
+    } else {
+        let bar_webview = app
+            .get_webview(BAR_WINDOW_LABEL)
+            .ok_or_else(|| "Bar 原生宿主存在，但 Child WebView 不存在".to_owned())?;
+        bar_webview
+            .set_auto_resize(true)
+            .map_err(|error| format!("无法恢复 Bar WebView 自动尺寸同步：{error}"))?;
     }
 
     Ok(())

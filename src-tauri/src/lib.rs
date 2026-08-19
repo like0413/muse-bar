@@ -54,6 +54,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::bar_layout::report_bar_content_width,
             commands::diagnostics::get_taskbar_dpi,
             commands::diagnostics::get_taskbar_identity,
             commands::diagnostics::get_taskbar_rect,
