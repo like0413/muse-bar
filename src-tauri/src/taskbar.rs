@@ -7,6 +7,7 @@ use crate::platform::windows::{
 };
 
 const PROCESS_PATH_BUFFER_LENGTH: usize = 32_768;
+const WINDOWS_DEFAULT_DPI: f64 = 96.0;
 
 /// 经过 Explorer 进程校验的主任务栏身份。
 #[derive(Debug)]
@@ -24,6 +25,30 @@ pub struct TaskbarRect {
     bottom: i32,
     width: i32,
     height: i32,
+}
+
+/// 任务栏窗口自身的 DPI 与对应缩放因子。
+#[derive(Debug, Clone, Copy)]
+pub struct TaskbarDpi {
+    dpi: u32,
+    scale_factor: f64,
+}
+
+impl TaskbarDpi {
+    /// 返回任务栏窗口当前使用的 DPI。
+    pub fn dpi(&self) -> u32 {
+        self.dpi
+    }
+
+    /// 返回以 96 DPI 为基准的窗口缩放因子。
+    pub fn scale_factor(&self) -> f64 {
+        self.scale_factor
+    }
+
+    /// 将一个物理像素坐标或长度转换为逻辑像素。
+    pub fn physical_to_logical(&self, physical_pixels: i32) -> f64 {
+        f64::from(physical_pixels) / self.scale_factor
+    }
 }
 
 impl TaskbarRect {
@@ -138,6 +163,19 @@ pub fn read_taskbar_rect(taskbar: &TaskbarIdentity) -> Result<TaskbarRect, Strin
         bottom: native_rect.bottom,
         width,
         height,
+    })
+}
+
+/// 使用任务栏窗口自身的句柄读取 DPI，而不是读取全局系统 DPI。
+pub fn read_taskbar_dpi(taskbar: &TaskbarIdentity) -> Result<TaskbarDpi, String> {
+    let dpi = unsafe { crate::platform::windows::GetDpiForWindow(taskbar.handle()) };
+    if dpi == 0 {
+        return Err("无法读取主任务栏 DPI".to_owned());
+    }
+
+    Ok(TaskbarDpi {
+        dpi,
+        scale_factor: f64::from(dpi) / WINDOWS_DEFAULT_DPI,
     })
 }
 
