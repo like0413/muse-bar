@@ -1,10 +1,13 @@
 /// Windows API 使用的宽字符串指针与编译期宽字符串宏。
-pub use ::windows::core::{w, PWSTR};
+pub use ::windows::core::{w, BOOL, PWSTR};
 
 /// 原生句柄、窗口句柄与矩形类型，以及句柄释放函数。
 pub use ::windows::Win32::Foundation::{
     CloseHandle, COLORREF, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
+
+/// 读取 Windows 桌面窗口管理器当前强调色的 API。
+pub use ::windows::Win32::Graphics::Dwm::DwmGetColorizationColor;
 
 /// 屏幕坐标转换以及窗口所属显示器查询 API。
 pub use ::windows::Win32::Graphics::Gdi::{

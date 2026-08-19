@@ -5,8 +5,10 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { getRuntimeInfo } from '@/lib/runtime-info'
 import {
   getSettings,
+  readColorMode,
   readTaskbarPosition,
   updateSettings,
+  type ColorMode,
   type SettingsPayload,
 } from '@/lib/settings-api'
 import { readCurrentWindowLabel } from '@/lib/window-label'
@@ -20,12 +22,19 @@ const settingsError = ref<string>()
 const isSavingSettings = ref(false)
 
 const currentPosition = computed(() => readTaskbarPosition(settings.value))
+const currentColorMode = computed(() => readColorMode(settings.value))
 
 const positionOptions = [
   { value: 'left', label: '靠左' },
   { value: 'center', label: '居中' },
   { value: 'right', label: '靠右' },
 ] as const
+
+const colorModeOptions: ReadonlyArray<{ value: ColorMode; label: string }> = [
+  { value: 'system', label: '跟随系统' },
+  { value: 'dark', label: '深色' },
+  { value: 'light', label: '浅色' },
+]
 
 /** 将 Rust 返回的 Unix 毫秒时间戳转换为本地可读时间。 */
 function formatStartedAt(startedAtUnixMs: number): string {
@@ -65,6 +74,28 @@ async function handlePositionChange(position: unknown): Promise<void> {
 
   try {
     settings.value = await updateSettings({ ...settings.value, position })
+  } catch (error) {
+    settingsError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    isSavingSettings.value = false
+  }
+}
+
+/** 只替换颜色模式字段，并让 Rust 保存后向所有窗口广播新设置。 */
+async function handleColorModeChange(colorMode: unknown): Promise<void> {
+  if (
+    !settings.value ||
+    typeof colorMode !== 'string' ||
+    !colorMode ||
+    colorMode === currentColorMode.value
+  )
+    return
+
+  isSavingSettings.value = true
+  settingsError.value = undefined
+
+  try {
+    settings.value = await updateSettings({ ...settings.value, colorMode })
   } catch (error) {
     settingsError.value = error instanceof Error ? error.message : String(error)
   } finally {
@@ -122,6 +153,26 @@ onMounted(() => {
       <p v-else class="text-muted-foreground text-sm">
         Current value: {{ currentPosition ?? 'Loading…' }}
       </p>
+    </section>
+    <section aria-labelledby="color-mode-heading" class="mt-4 flex flex-col gap-2">
+      <h2 id="color-mode-heading" class="text-lg font-medium">颜色模式</h2>
+      <ToggleGroup
+        type="single"
+        variant="outline"
+        :disabled="isSavingSettings || !settings"
+        :model-value="currentColorMode"
+        @update:model-value="handleColorModeChange"
+      >
+        <ToggleGroupItem
+          v-for="option in colorModeOptions"
+          :key="option.value"
+          :value="option.value"
+          :aria-label="option.label"
+        >
+          {{ option.label }}
+        </ToggleGroupItem>
+      </ToggleGroup>
+      <p class="text-muted-foreground text-sm">当前值：{{ currentColorMode }}</p>
     </section>
   </main>
 </template>

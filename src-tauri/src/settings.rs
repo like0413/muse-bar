@@ -41,6 +41,16 @@ pub enum ProgressStyle {
     BackgroundGradient,
 }
 
+/// Muse Bar 前端窗口采用的颜色模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ColorMode {
+    /// 跟随 Windows 当前的应用颜色模式。
+    System,
+    Dark,
+    Light,
+}
+
 /// Muse Bar 可持久化的用户设置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -51,6 +61,7 @@ pub struct AppSettings {
     pub max_width: u32,
     pub manual_offset: i32,
     pub progress_style: ProgressStyle,
+    pub color_mode: ColorMode,
     pub launch_on_startup: bool,
 }
 
@@ -64,6 +75,7 @@ impl Default for AppSettings {
             max_width: 560,
             manual_offset: 0,
             progress_style: ProgressStyle::Underline,
+            color_mode: ColorMode::System,
             launch_on_startup: false,
         }
     }

@@ -21,6 +21,7 @@ const mediaMetadataStatus = ref('正在读取媒体信息')
 const mediaMetadataDetails = ref('')
 const artworkDataUrl = ref<string | null>(null)
 const artworkDecodeFailed = ref(false)
+const accentColor = ref('#0078D4')
 const playbackStatusText = ref('')
 const playbackCapabilitiesText = ref('')
 const timelineText = ref('')
@@ -69,6 +70,7 @@ function showCurrentMediaMetadata(metadata: CurrentMediaMetadata | null) {
     mediaMetadataDetails.value = mediaMetadataStatus.value
     artworkDataUrl.value = null
     artworkDecodeFailed.value = false
+    accentColor.value = '#0078D4'
     return
   }
 
@@ -76,6 +78,7 @@ function showCurrentMediaMetadata(metadata: CurrentMediaMetadata | null) {
   mediaMetadataStatus.value = metadata.artist ? `${title} · ${metadata.artist}` : title
   mediaMetadataDetails.value = `${metadata.sourceAppId}\n标题：${title}\n歌手：${metadata.artist || '未知歌手'}`
   artworkDataUrl.value = metadata.artworkDataUrl
+  accentColor.value = metadata.accentColor || '#0078D4'
   artworkDecodeFailed.value = false
 }
 
@@ -261,7 +264,7 @@ onBeforeUnmount(() => {
   <main class="flex h-screen w-screen items-center justify-center bg-transparent p-1">
     <section
       aria-label="Muse Bar"
-      class="bg-secondary text-secondary-foreground flex h-full w-full items-center gap-2 rounded-md border px-2 text-sm font-medium"
+      class="bg-secondary text-secondary-foreground relative flex h-full w-full items-center gap-2 overflow-hidden rounded-md border px-2 text-sm font-medium"
     >
       <div
         v-if="artworkDataUrl"
@@ -286,6 +289,11 @@ onBeforeUnmount(() => {
       <span class="min-w-0 flex-1 truncate" :title="mediaDetails">
         {{ barSummary }}
       </span>
+      <span
+        aria-hidden="true"
+        class="absolute inset-x-0 bottom-0 h-0.5"
+        :style="{ backgroundColor: accentColor }"
+      />
     </section>
   </main>
 </template>

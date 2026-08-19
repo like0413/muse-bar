@@ -7,6 +7,7 @@ use std::{
     thread,
 };
 
+use crate::platform::windows::{DwmGetColorizationColor, BOOL};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime};
@@ -29,6 +30,7 @@ const CURRENT_PLAYBACK_STATUS_CHANGED_EVENT: &str = "current-playback-status-cha
 const CURRENT_PLAYBACK_CAPABILITIES_CHANGED_EVENT: &str = "current-playback-capabilities-changed";
 const CURRENT_TIMELINE_CHANGED_EVENT: &str = "current-timeline-changed";
 const MAX_ARTWORK_BYTES: u64 = 4 * 1024 * 1024;
+const DEFAULT_WINDOWS_ACCENT_COLOR: &str = "#0078D4";
 
 /// 当前 Windows 系统会话提供的媒体元数据；封面与文字始终属于同一份快照。
 #[derive(Debug, Clone, Serialize)]
@@ -38,6 +40,22 @@ pub(crate) struct CurrentMediaMetadata {
     title: String,
     artist: String,
     artwork_data_url: Option<String>,
+    accent_color: String,
+}
+
+/// 一次缩略图读取产生的前端图片和候选主色。
+struct MediaArtwork {
+    data_url: String,
+    accent_color: Option<String>,
+}
+
+/// 用于统计相近颜色出现次数及其实际 RGB 均值。
+#[derive(Clone, Copy, Default)]
+struct ColorBucket {
+    count: u32,
+    red_sum: u64,
+    green_sum: u64,
+    blue_sum: u64,
 }
 
 /// Windows 当前媒体会话的播放状态。
@@ -644,9 +662,9 @@ fn read_media_metadata(
     let artist = properties
         .Artist()
         .map_err(|error| format!("无法读取当前会话歌手：{error}"))?;
-    let artwork_data_url = match properties.Thumbnail() {
-        Ok(thumbnail) => match read_artwork_data_url(&thumbnail) {
-            Ok(data_url) => data_url,
+    let artwork = match properties.Thumbnail() {
+        Ok(thumbnail) => match read_artwork(&thumbnail) {
+            Ok(artwork) => artwork,
             Err(error) => {
                 // 个别播放器会发布暂时不可读的缩略图。封面失败不应丢弃同批标题和歌手。
                 log::warn!("无法读取当前会话封面，本次使用空封面：{error}");
@@ -655,19 +673,23 @@ fn read_media_metadata(
         },
         Err(_) => None,
     };
+    let accent_color = artwork
+        .as_ref()
+        .and_then(|artwork| artwork.accent_color.clone())
+        .unwrap_or_else(read_windows_accent_color);
+    let artwork_data_url = artwork.map(|artwork| artwork.data_url);
 
     Ok(CurrentMediaMetadata {
         source_app_id: source_app_id.to_string(),
         title: title.to_string(),
         artist: artist.to_string(),
         artwork_data_url,
+        accent_color,
     })
 }
 
-/// 读取 SMTC 缩略图流并编码为 WebView 可直接显示的 data URL。
-fn read_artwork_data_url(
-    thumbnail: &IRandomAccessStreamReference,
-) -> Result<Option<String>, String> {
+/// 读取一次 SMTC 缩略图流，同时生成 WebView 图片和封面主色。
+fn read_artwork(thumbnail: &IRandomAccessStreamReference) -> Result<Option<MediaArtwork>, String> {
     let stream = thumbnail
         .OpenReadAsync()
         .and_then(|operation| operation.get())
@@ -709,9 +731,107 @@ fn read_artwork_data_url(
         .map(|content_type| content_type.to_string())
         .unwrap_or_default();
     let content_type = detect_artwork_content_type(&bytes, &reported_content_type);
-    let encoded = BASE64_STANDARD.encode(bytes);
+    // 当前函数运行在专用媒体元数据线程中，图片解码不会阻塞 Tauri 命令或 WebView。
+    let accent_color = extract_dominant_color(&bytes);
+    let encoded = BASE64_STANDARD.encode(&bytes);
 
-    Ok(Some(format!("data:{content_type};base64,{encoded}")))
+    Ok(Some(MediaArtwork {
+        data_url: format!("data:{content_type};base64,{encoded}"),
+        accent_color,
+    }))
+}
+
+/// 从缩小后的封面中选择出现频率高、且在深浅背景上都可辨识的颜色。
+fn extract_dominant_color(bytes: &[u8]) -> Option<String> {
+    let image = image::load_from_memory(bytes)
+        .ok()?
+        .thumbnail(48, 48)
+        .to_rgba8();
+    let mut buckets = [ColorBucket::default(); 4096];
+
+    for pixel in image.pixels() {
+        let [red, green, blue, alpha] = pixel.0;
+        if alpha < 128 {
+            continue;
+        }
+
+        let index = ((usize::from(red) >> 4) << 8)
+            | ((usize::from(green) >> 4) << 4)
+            | (usize::from(blue) >> 4);
+        let bucket = &mut buckets[index];
+        bucket.count += 1;
+        bucket.red_sum += u64::from(red);
+        bucket.green_sum += u64::from(green);
+        bucket.blue_sum += u64::from(blue);
+    }
+
+    let mut best: Option<(u64, u8, u8, u8)> = None;
+    for bucket in buckets.into_iter().filter(|bucket| bucket.count > 0) {
+        let count = u64::from(bucket.count);
+        let red = (bucket.red_sum / count) as u8;
+        let green = (bucket.green_sum / count) as u8;
+        let blue = (bucket.blue_sum / count) as u8;
+        let maximum = red.max(green).max(blue);
+        let minimum = red.min(green).min(blue);
+        let saturation = maximum - minimum;
+
+        // 低饱和颜色容易与任务栏融为一体；同时要求候选色在典型深浅背景上均有辨识度。
+        if saturation < 24 || !has_sufficient_taskbar_contrast(red, green, blue) {
+            continue;
+        }
+
+        let score = count * (u64::from(saturation) + 32);
+        if best
+            .as_ref()
+            .map_or(true, |(best_score, ..)| score > *best_score)
+        {
+            best = Some((score, red, green, blue));
+        }
+    }
+
+    best.map(|(_, red, green, blue)| format!("#{red:02X}{green:02X}{blue:02X}"))
+}
+
+/// 判断颜色相对典型深色与浅色任务栏背景是否都具有最低辨识度。
+fn has_sufficient_taskbar_contrast(red: u8, green: u8, blue: u8) -> bool {
+    let luminance = relative_luminance(red, green, blue);
+    let light_background = relative_luminance(245, 245, 245);
+    let dark_background = relative_luminance(32, 32, 32);
+    contrast_ratio(luminance, light_background) >= 1.6
+        && contrast_ratio(luminance, dark_background) >= 1.6
+}
+
+/// 将 sRGB 颜色转换为用于对比度计算的相对亮度。
+fn relative_luminance(red: u8, green: u8, blue: u8) -> f64 {
+    /// 将单个 sRGB 通道转换为线性光通道。
+    fn linearize(channel: u8) -> f64 {
+        let channel = f64::from(channel) / 255.0;
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    0.2126 * linearize(red) + 0.7152 * linearize(green) + 0.0722 * linearize(blue)
+}
+
+/// 计算两个相对亮度之间的 WCAG 对比度。
+fn contrast_ratio(first: f64, second: f64) -> f64 {
+    let lighter = first.max(second);
+    let darker = first.min(second);
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+/// 读取 Windows 当前强调色；系统 API 不可用时采用 Windows 默认蓝色。
+fn read_windows_accent_color() -> String {
+    let mut colorization = 0_u32;
+    let mut opaque_blend = BOOL::default();
+    if unsafe { DwmGetColorizationColor(&mut colorization, &mut opaque_blend) }.is_err() {
+        return DEFAULT_WINDOWS_ACCENT_COLOR.to_owned();
+    }
+
+    format!("#{:06X}", colorization & 0x00FF_FFFF)
 }
 
 /// 根据图片文件头确定 WebView 使用的 MIME；无法识别时才采用播放器上报的首个类型。

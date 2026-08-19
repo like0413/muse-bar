@@ -21,6 +21,7 @@ export interface CurrentMediaMetadata {
   title: string
   artist: string
   artworkDataUrl: string | null
+  accentColor: string
 }
 
 export interface CurrentPlaybackCapabilities {
