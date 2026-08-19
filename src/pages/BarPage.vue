@@ -13,17 +13,17 @@ import {
   getCurrentPlaybackCapabilities,
   getCurrentPlaybackStatus,
   getCurrentTimeline,
-  listenToMediaSessionActivityChanges,
   listenToCurrentMediaMetadataChanges,
   listenToCurrentPlaybackCapabilitiesChanges,
   listenToCurrentPlaybackStatusChanges,
   listenToCurrentTimelineChanges,
+  listenToMediaSessionActivityChanges,
   refreshSelectedMediaSession,
+  type ControlAction,
   type CurrentMediaMetadata,
   type CurrentPlaybackCapabilities,
   type CurrentPlaybackStatus,
   type CurrentTimeline,
-  type ControlAction,
   type MediaSelectionReason,
 } from '@/lib/media-api'
 import {
@@ -534,7 +534,7 @@ onBeforeUnmount(() => {
         class="pointer-events-none absolute inset-y-0 left-0 z-0 transition-[width] duration-150"
         :style="backgroundProgressStyle"
       />
-      <Avatar class="relative z-10 size-8 rounded-md border">
+      <Avatar class="relative z-10 size-9.5 rounded-sm">
         <AvatarImage v-if="artworkDataUrl" :src="artworkDataUrl" alt="" class="object-cover" />
         <AvatarFallback class="rounded-md" aria-label="暂无歌曲封面">
           <Music2Icon class="text-muted-foreground size-4" />
@@ -561,7 +561,6 @@ onBeforeUnmount(() => {
         >
           <SkipBackIcon data-icon="inline-start" />
         </Button>
-        <ButtonGroupSeparator />
         <Button
           variant="ghost"
           size="icon-sm"
@@ -573,7 +572,6 @@ onBeforeUnmount(() => {
           <PauseIcon v-if="isPlaying" data-icon="inline-start" />
           <PlayIcon v-else data-icon="inline-start" />
         </Button>
-        <ButtonGroupSeparator />
         <Button
           variant="ghost"
           size="icon-sm"

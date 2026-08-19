@@ -1031,7 +1031,8 @@ fn extract_dominant_color(bytes: &[u8]) -> Option<String> {
             continue;
         }
 
-        let score = count * (u64::from(saturation) + 32);
+        // 在出现频率仍占主导的前提下，提高鲜艳候选色的权重，避免总是选中大面积灰暗背景。
+        let score = count * (u64::from(saturation) * 2 + 32);
         if best
             .as_ref()
             .map_or(true, |(best_score, ..)| score > *best_score)
@@ -1040,7 +1041,43 @@ fn extract_dominant_color(bytes: &[u8]) -> Option<String> {
         }
     }
 
-    best.map(|(_, red, green, blue)| format!("#{red:02X}{green:02X}{blue:02X}"))
+    best.map(|(_, red, green, blue)| {
+        let (red, green, blue) = enhance_color_saturation(red, green, blue);
+        format!("#{red:02X}{green:02X}{blue:02X}")
+    })
+}
+
+/// 温和提高颜色饱和度并保持最高通道亮度；增强后对比度不足时保留原色。
+fn enhance_color_saturation(red: u8, green: u8, blue: u8) -> (u8, u8, u8) {
+    let maximum = red.max(green).max(blue);
+    let minimum = red.min(green).min(blue);
+    let difference = maximum - minimum;
+    if maximum == 0 || difference == 0 {
+        return (red, green, blue);
+    }
+
+    let maximum = f64::from(maximum);
+    let saturation = f64::from(difference) / maximum;
+    let enhanced_saturation = (saturation * 1.15 + 0.05).min(1.0);
+    let expansion = enhanced_saturation / saturation;
+
+    // 以最亮通道为锚点向外拉开其余通道，保持色相和视觉亮度基本稳定。
+    let enhance_channel = |channel: u8| {
+        (maximum - (maximum - f64::from(channel)) * expansion)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    let enhanced = (
+        enhance_channel(red),
+        enhance_channel(green),
+        enhance_channel(blue),
+    );
+
+    if has_sufficient_taskbar_contrast(enhanced.0, enhanced.1, enhanced.2) {
+        enhanced
+    } else {
+        (red, green, blue)
+    }
 }
 
 /// 判断颜色相对典型深色与浅色任务栏背景是否都具有最低辨识度。
