@@ -37,7 +37,7 @@ pub fn run() {
             app.manage(state::AppState::new(env!("CARGO_PKG_VERSION"), settings));
 
             #[cfg(target_os = "windows")]
-            app.manage(system_media::SystemMediaManager::initialize());
+            app.manage(system_media::SystemMediaManager::initialize(app.handle()));
 
             #[cfg(debug_assertions)]
             {
@@ -59,6 +59,7 @@ pub fn run() {
             commands::diagnostics::get_taskbar_dpi,
             commands::diagnostics::get_taskbar_identity,
             commands::diagnostics::get_taskbar_rect,
+            commands::media::get_current_media_metadata,
             commands::media::get_media_session_source_app_ids,
             commands::media::is_system_media_manager_initialized,
             commands::runtime::get_runtime_info,

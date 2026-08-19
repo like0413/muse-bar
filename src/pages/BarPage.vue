@@ -1,23 +1,64 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import type { UnlistenFn } from '@tauri-apps/api/event'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { getMediaSessionSourceAppIds } from '@/lib/media-api'
+import {
+  getCurrentMediaMetadata,
+  listenToCurrentMediaMetadataChanges,
+  type CurrentMediaMetadata,
+} from '@/lib/media-api'
 
-const mediaSessionStatus = ref('正在读取媒体会话')
+const mediaMetadataStatus = ref('正在读取媒体信息')
+const mediaMetadataDetails = ref('')
+let stopMediaMetadataListener: UnlistenFn | undefined
+let hasUnmounted = false
 
-/** 从 Rust 读取会话 Source App ID，并转换为当前验证页面的单行文本。 */
-async function loadMediaSessionSourceAppIds() {
+/** 将当前会话元数据转换为 Bar 的文本和完整悬停说明。 */
+function showCurrentMediaMetadata(metadata: CurrentMediaMetadata | null) {
+  if (!metadata) {
+    mediaMetadataStatus.value = '当前没有媒体会话'
+    mediaMetadataDetails.value = mediaMetadataStatus.value
+    return
+  }
+
+  const title = metadata.title || '未知标题'
+  mediaMetadataStatus.value = metadata.artist ? `${title} · ${metadata.artist}` : title
+  mediaMetadataDetails.value = `${metadata.sourceAppId}\n标题：${title}\n歌手：${metadata.artist || '未知歌手'}`
+}
+
+/** 从 Rust 主动读取一次 Windows 当前会话元数据。 */
+async function loadCurrentMediaMetadata() {
   try {
-    const sourceAppIds = await getMediaSessionSourceAppIds()
-    mediaSessionStatus.value = sourceAppIds.length
-      ? `媒体会话 ${sourceAppIds.length} 个：${sourceAppIds.join('、')}`
-      : '未检测到媒体会话'
+    showCurrentMediaMetadata(await getCurrentMediaMetadata())
   } catch {
-    mediaSessionStatus.value = '媒体会话读取失败'
+    mediaMetadataStatus.value = '媒体信息读取失败'
+    mediaMetadataDetails.value = mediaMetadataStatus.value
   }
 }
 
-onMounted(loadMediaSessionSourceAppIds)
+/** 先建立元数据事件订阅，再读取当前值，避免页面初始化期间遗漏切歌。 */
+async function startMediaMetadataListener() {
+  try {
+    const stopListener = await listenToCurrentMediaMetadataChanges(showCurrentMediaMetadata)
+    if (hasUnmounted) {
+      stopListener()
+      return
+    }
+
+    stopMediaMetadataListener = stopListener
+    await loadCurrentMediaMetadata()
+  } catch {
+    mediaMetadataStatus.value = '媒体信息监听失败'
+    mediaMetadataDetails.value = mediaMetadataStatus.value
+  }
+}
+
+onMounted(startMediaMetadataListener)
+
+onBeforeUnmount(() => {
+  hasUnmounted = true
+  stopMediaMetadataListener?.()
+})
 </script>
 
 <template>
@@ -26,7 +67,7 @@ onMounted(loadMediaSessionSourceAppIds)
       aria-label="Muse Bar"
       class="bg-secondary text-secondary-foreground flex h-full w-full items-center justify-center rounded-md border px-3 text-sm font-medium"
     >
-      <span class="truncate" :title="mediaSessionStatus">{{ mediaSessionStatus }}</span>
+      <span class="truncate" :title="mediaMetadataDetails">{{ mediaMetadataStatus }}</span>
     </section>
   </main>
 </template>
