@@ -63,6 +63,16 @@ export interface SelectedMediaSession {
   reason: MediaSelectionReason
 }
 
+export type ControlAction = 'togglePlayPause' | 'previous' | 'next'
+
+export type MediaControlErrorCode = 'noSession' | 'unsupported' | 'rejected' | 'windowsApi'
+
+export interface MediaControlError {
+  action: ControlAction
+  code: MediaControlErrorCode
+  message: string
+}
+
 export interface CurrentMediaMetadata {
   sourceAppId: string
   title: string
@@ -143,6 +153,11 @@ export function listenToMediaSessionActivityChanges(
 /** 要求 Rust 按活动记录重新选择 Bar 实际观察的媒体会话。 */
 export function refreshSelectedMediaSession(): Promise<SelectedMediaSession | null> {
   return invoke<SelectedMediaSession | null>('refresh_selected_media_session')
+}
+
+/** 对 Rust 当前选中的媒体会话执行一个控制动作。 */
+export function controlMedia(action: ControlAction): Promise<void> {
+  return invoke<void>('control_media', { action })
 }
 
 /** 订阅系统媒体会话列表变化，并返回用于取消订阅的函数。 */

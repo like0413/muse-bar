@@ -11,6 +11,7 @@ use crate::{
     media_activity::{
         session_key, MediaActivityTracker, MediaSessionActivity, SelectedMediaSession,
     },
+    media_control::{execute_control_action, ControlAction, MediaControlError},
     platform::windows::{DwmGetColorizationColor, BOOL},
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -468,6 +469,14 @@ impl SystemMediaManager {
         }
 
         Ok(selection)
+    }
+
+    /// 对 Bar 当前真正观察的会话执行播放、暂停或切歌操作。
+    pub(crate) fn control_media(&self, action: ControlAction) -> Result<(), MediaControlError> {
+        let session = self
+            .observed_session()
+            .map_err(|message| MediaControlError::windows_api(action, message))?;
+        execute_control_action(session.as_ref(), action)
     }
 
     /// 返回 Bar 当前真正观察的会话，而不是 Windows 自行选出的 CurrentSession。

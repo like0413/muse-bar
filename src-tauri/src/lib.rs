@@ -12,6 +12,9 @@ mod explorer_monitor;
 /// 所有媒体会话的有效活动时间跟踪。
 mod media_activity;
 
+/// 当前选中媒体会话的播放与切歌控制。
+mod media_control;
+
 /// 与操作系统交互的条件编译边界。
 mod platform;
 
@@ -59,6 +62,7 @@ pub fn run() {
             commands::media::get_current_playback_capabilities,
             commands::media::get_current_playback_status,
             commands::media::get_current_timeline,
+            commands::media::control_media,
             commands::media::get_media_session_source_app_ids,
             commands::media::get_media_session_identities,
             commands::media::get_media_session_activities,

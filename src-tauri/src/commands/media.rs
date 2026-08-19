@@ -1,6 +1,7 @@
 use tauri::{AppHandle, State};
 
 use crate::media_activity::{MediaSessionActivity, SelectedMediaSession};
+use crate::media_control::{ControlAction, MediaControlError};
 use crate::system_media::{
     CurrentMediaMetadata, CurrentPlaybackCapabilities, CurrentPlaybackStatus, CurrentTimeline,
     MediaSessionIdentity, MediaSnapshot, SystemMediaManager,
@@ -43,6 +44,15 @@ pub fn refresh_selected_media_session(
     state: State<'_, SystemMediaManager>,
 ) -> Result<Option<SelectedMediaSession>, String> {
     state.refresh_selected_media_session(&app)
+}
+
+/// 对 Bar 当前选择的媒体会话执行播放、暂停、上一曲或下一曲。
+#[tauri::command]
+pub fn control_media(
+    state: State<'_, SystemMediaManager>,
+    action: ControlAction,
+) -> Result<(), MediaControlError> {
+    state.control_media(action)
 }
 
 /// 从后台缓存返回 Windows 当前媒体会话的标题、歌手和封面。

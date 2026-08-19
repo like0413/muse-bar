@@ -1,8 +1,12 @@
 <script setup lang="ts">
+import { PauseIcon, PlayIcon, SkipBackIcon, SkipForwardIcon } from '@lucide/vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
+import { Button } from '@/components/ui/button'
+import { ButtonGroup, ButtonGroupSeparator } from '@/components/ui/button-group'
 import {
+  controlMedia,
   getCurrentMediaMetadata,
   getCurrentPlaybackCapabilities,
   getCurrentPlaybackStatus,
@@ -17,6 +21,7 @@ import {
   type CurrentPlaybackCapabilities,
   type CurrentPlaybackStatus,
   type CurrentTimeline,
+  type ControlAction,
   type MediaSelectionReason,
 } from '@/lib/media-api'
 import { openSettingsWindow } from '@/lib/settings-window'
@@ -32,6 +37,10 @@ const timelineText = ref('')
 const timelineDetails = ref('')
 const settingsWindowError = ref('')
 const mediaSelectionText = ref('')
+const controlError = ref('')
+const isControlPending = ref(false)
+const currentPlaybackStatus = ref<CurrentPlaybackStatus | null>(null)
+const currentPlaybackCapabilities = ref<CurrentPlaybackCapabilities | null>(null)
 let stopMediaMetadataListener: UnlistenFn | undefined
 let stopPlaybackCapabilitiesListener: UnlistenFn | undefined
 let stopPlaybackStatusListener: UnlistenFn | undefined
@@ -57,6 +66,7 @@ const barSummary = computed(() =>
     timelineText.value,
     playbackCapabilitiesText.value,
     settingsWindowError.value,
+    controlError.value,
   ]
     .filter(Boolean)
     .join(' · '),
@@ -77,6 +87,13 @@ const selectionReasonLabels: Record<MediaSelectionReason, string> = {
   lastPausedPreferred: '最近暂停的音乐播放器',
   windowsCurrentFallback: 'Windows 当前媒体',
 }
+
+const isPlaying = computed(() => currentPlaybackStatus.value === 'playing')
+const canTogglePlayPause = computed(() => {
+  const capabilities = currentPlaybackCapabilities.value
+  if (!capabilities) return false
+  return isPlaying.value ? capabilities.canPause : capabilities.canPlay
+})
 
 /** 将当前会话元数据转换为 Bar 的文本和完整悬停说明。 */
 function showCurrentMediaMetadata(metadata: CurrentMediaMetadata | null) {
@@ -126,13 +143,38 @@ async function applyLatestMediaSelection(): Promise<void> {
   }
 }
 
+/** 从 Tauri 的未知拒绝值中提取可读的结构化控制错误。 */
+function readControlErrorMessage(error: unknown): string {
+  if (typeof error === 'object' && error && 'message' in error) {
+    return String(error.message)
+  }
+  return String(error)
+}
+
+/** 禁止重复点击期间并发控制同一会话，并显示播放器返回的失败原因。 */
+async function performControl(action: ControlAction): Promise<void> {
+  if (isControlPending.value) return
+
+  isControlPending.value = true
+  controlError.value = ''
+  try {
+    await controlMedia(action)
+  } catch (error) {
+    controlError.value = `控制失败：${readControlErrorMessage(error)}`
+  } finally {
+    isControlPending.value = false
+  }
+}
+
 /** 将 Windows 播放状态转换为当前验证页面使用的中文文本。 */
 function showCurrentPlaybackStatus(status: CurrentPlaybackStatus | null) {
+  currentPlaybackStatus.value = status
   playbackStatusText.value = status ? playbackStatusLabels[status] : '无播放状态'
 }
 
 /** 将播放器声明为可用的控制能力汇总为单行文本。 */
 function showCurrentPlaybackCapabilities(capabilities: CurrentPlaybackCapabilities | null) {
+  currentPlaybackCapabilities.value = capabilities
   if (!capabilities) {
     playbackCapabilitiesText.value = '无控制能力'
     return
@@ -349,6 +391,41 @@ onBeforeUnmount(() => {
       <span class="min-w-0 flex-1 truncate" :title="mediaDetails">
         {{ barSummary }}
       </span>
+      <ButtonGroup aria-label="媒体控制" class="shrink-0">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="上一曲"
+          title="上一曲"
+          :disabled="isControlPending || !currentPlaybackCapabilities?.canPrevious"
+          @click="performControl('previous')"
+        >
+          <SkipBackIcon />
+        </Button>
+        <ButtonGroupSeparator />
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          :aria-label="isPlaying ? '暂停' : '播放'"
+          :title="isPlaying ? '暂停' : '播放'"
+          :disabled="isControlPending || !canTogglePlayPause"
+          @click="performControl('togglePlayPause')"
+        >
+          <PauseIcon v-if="isPlaying" />
+          <PlayIcon v-else />
+        </Button>
+        <ButtonGroupSeparator />
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="下一曲"
+          title="下一曲"
+          :disabled="isControlPending || !currentPlaybackCapabilities?.canNext"
+          @click="performControl('next')"
+        >
+          <SkipForwardIcon />
+        </Button>
+      </ButtonGroup>
       <span
         aria-hidden="true"
         class="absolute inset-x-0 bottom-0 h-0.5"
