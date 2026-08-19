@@ -1,5 +1,9 @@
 use tauri::Manager;
 
+/// Child 窗口样式的阶段性技术验证。
+#[cfg(target_os = "windows")]
+pub mod child_window_test;
+
 /// 前端可调用的 Tauri 命令。
 pub mod commands;
 
@@ -37,7 +41,36 @@ pub fn run() {
             }
 
             #[cfg(target_os = "windows")]
-            explorer_monitor::start(app.handle().clone())?;
+            {
+                let bar_window = app
+                    .get_webview_window("bar")
+                    .ok_or_else(|| std::io::Error::other("无法找到 Bar 测试窗口"))?;
+                let style_snapshot = child_window_test::apply_child_style(&bar_window)
+                    .map_err(std::io::Error::other)?;
+                log::info!(
+                    "Bar Child 样式验证：修改前=0x{:08X}，目标=0x{:08X}，修改后=0x{:08X}",
+                    style_snapshot.before,
+                    style_snapshot.requested,
+                    style_snapshot.applied
+                );
+
+                let taskbar = taskbar::find_main_taskbar().map_err(std::io::Error::other)?;
+                let taskbar_rect =
+                    taskbar::read_taskbar_rect(&taskbar).map_err(std::io::Error::other)?;
+                let attachment =
+                    child_window_test::attach_to_taskbar(&bar_window, &taskbar, &taskbar_rect)
+                        .map_err(std::io::Error::other)?;
+                log::info!(
+                    "Bar Child 挂载验证：父窗口=0x{:X}，客户区位置=({}, {})，尺寸={}×{}",
+                    attachment.parent,
+                    attachment.client_x,
+                    attachment.client_y,
+                    attachment.width,
+                    attachment.height
+                );
+
+                explorer_monitor::start(app.handle().clone())?;
+            }
 
             Ok(())
         })

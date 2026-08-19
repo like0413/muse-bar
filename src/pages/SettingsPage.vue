@@ -79,7 +79,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <main class="flex min-h-screen flex-col justify-center gap-1 p-6">
+  <main class="bg-background flex min-h-screen flex-col justify-center gap-1 p-6">
     <p class="text-muted-foreground text-sm">Configuration surface</p>
     <h1 class="text-2xl font-semibold">Muse Bar Settings</h1>
     <p class="text-sm">
