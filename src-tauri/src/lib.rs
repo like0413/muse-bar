@@ -3,6 +3,10 @@ use tauri::Manager;
 /// 前端可调用的 Tauri 命令。
 pub mod commands;
 
+/// Explorer 生命周期与任务栏重建消息监听。
+#[cfg(target_os = "windows")]
+pub mod explorer_monitor;
+
 /// 与操作系统交互的条件编译边界。
 pub mod platform;
 
@@ -31,6 +35,10 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
+            #[cfg(target_os = "windows")]
+            explorer_monitor::start(app.handle().clone())?;
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
