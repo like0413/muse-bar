@@ -22,4 +22,31 @@ impl SystemMediaManager {
     pub(crate) fn is_initialized(&self) -> bool {
         self.manager.is_some()
     }
+
+    /// 枚举当前系统媒体会话，并按 Windows 返回顺序提取 Source App ID。
+    pub(crate) fn source_app_ids(&self) -> Result<Vec<String>, String> {
+        let manager = self
+            .manager
+            .as_ref()
+            .ok_or_else(|| "Windows 全局系统媒体管理器尚未初始化".to_owned())?;
+        let sessions = manager
+            .GetSessions()
+            .map_err(|error| format!("无法枚举系统媒体会话：{error}"))?;
+        let session_count = sessions
+            .Size()
+            .map_err(|error| format!("无法读取系统媒体会话数量：{error}"))?;
+        let mut source_app_ids = Vec::with_capacity(session_count as usize);
+
+        for index in 0..session_count {
+            let session = sessions
+                .GetAt(index)
+                .map_err(|error| format!("无法读取第 {} 个系统媒体会话：{error}", index + 1))?;
+            let source_app_id = session.SourceAppUserModelId().map_err(|error| {
+                format!("无法读取第 {} 个会话的 Source App ID：{error}", index + 1)
+            })?;
+            source_app_ids.push(source_app_id.to_string());
+        }
+
+        Ok(source_app_ids)
+    }
 }

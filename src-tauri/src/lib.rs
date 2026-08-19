@@ -59,6 +59,7 @@ pub fn run() {
             commands::diagnostics::get_taskbar_dpi,
             commands::diagnostics::get_taskbar_identity,
             commands::diagnostics::get_taskbar_rect,
+            commands::media::get_media_session_source_app_ids,
             commands::media::is_system_media_manager_initialized,
             commands::runtime::get_runtime_info,
             commands::settings::get_settings,
