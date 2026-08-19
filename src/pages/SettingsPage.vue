@@ -1,18 +1,55 @@
 <script setup lang="ts">
+import {
+  ActivityIcon,
+  AlertCircleIcon,
+  FolderOpenIcon,
+  InfoIcon,
+  Music2Icon,
+  PaletteIcon,
+  PanelTopIcon,
+  RefreshCwIcon,
+  Settings2Icon,
+} from '@lucide/vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldTitle,
+} from '@/components/ui/field'
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+} from '@/components/ui/sidebar'
 import { Slider } from '@/components/ui/slider'
+import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import {
-  controlMedia,
   getCurrentMediaSnapshot,
-  getMediaSessionIdentities,
   getMediaSessionActivities,
+  getMediaSessionIdentities,
   listenToCurrentMediaSnapshotChanges,
   listenToCurrentTimelineChanges,
-  listenToMediaSessionIdentityChanges,
   listenToMediaSessionActivityChanges,
+  listenToMediaSessionIdentityChanges,
   type MediaActivityReason,
   type MediaPlayerKind,
   type MediaSessionActivity,
@@ -23,33 +60,55 @@ import { getRuntimeInfo } from '@/lib/runtime-info'
 import {
   getSettings,
   readColorMode,
+  readLaunchOnStartup,
+  readManualOffset,
+  readMaximumWidth,
+  readMinimumWidth,
   readProgressStyle,
   readTaskbarPosition,
+  readWindowMode,
   updateSettings,
   type ColorMode,
   type ProgressStyle,
   type SettingsPayload,
+  type TaskbarPosition,
 } from '@/lib/settings-api'
-import { getTaskbarOccupiedRegions, type TaskbarOccupancy } from '@/lib/taskbar-diagnostics-api'
+import {
+  getTaskbarDpi,
+  getTaskbarIdentity,
+  getTaskbarOccupiedRegions,
+  getWindowsVersion,
+  openLogDirectory,
+  type TaskbarDpi,
+  type TaskbarIdentity,
+  type TaskbarOccupancy,
+  type WindowsVersion,
+} from '@/lib/taskbar-diagnostics-api'
 import { readCurrentWindowLabel } from '@/lib/window-label'
 import type { RuntimeInfo } from '@/types/runtime-info'
 
+type SettingsSection = 'taskbar' | 'appearance' | 'media' | 'general' | 'diagnostics'
+
+const activeSection = ref<SettingsSection>('taskbar')
 const windowLabel = readCurrentWindowLabel()
 const runtimeInfo = ref<RuntimeInfo>()
 const runtimeError = ref<string>()
+const windowsVersion = ref<WindowsVersion>()
 const settings = ref<SettingsPayload>()
 const settingsError = ref<string>()
 const isSavingSettings = ref(false)
+const taskbarIdentity = ref<TaskbarIdentity>()
+const taskbarDpi = ref<TaskbarDpi>()
 const taskbarOccupancy = ref<TaskbarOccupancy>()
-const taskbarOccupancyError = ref<string>()
+const taskbarDiagnosticError = ref<string>()
 const mediaSnapshot = ref<MediaSnapshot | null>(null)
 const mediaSnapshotError = ref<string>()
 const mediaSessionIdentities = ref<MediaSessionIdentity[]>([])
 const mediaSessionActivities = ref<MediaSessionActivity[]>([])
-const seekValue = ref<number[]>([0])
-const isSeekPreviewing = ref(false)
-const isSeekPending = ref(false)
-const seekFeedback = ref('')
+const logDirectoryError = ref<string>()
+const minWidthDraft = ref<number[]>([])
+const maxWidthDraft = ref<number[]>([])
+const manualOffsetDraft = ref<number[]>([])
 let stopMediaSnapshotListener: UnlistenFn | undefined
 let stopTimelineListener: UnlistenFn | undefined
 let stopMediaSessionIdentityListener: UnlistenFn | undefined
@@ -59,34 +118,41 @@ let hasUnmounted = false
 const currentPosition = computed(() => readTaskbarPosition(settings.value))
 const currentColorMode = computed(() => readColorMode(settings.value))
 const currentProgressStyle = computed(() => readProgressStyle(settings.value))
-const mediaSnapshotJson = computed(() => serializeMediaSnapshot(mediaSnapshot.value))
-const seekMinimum = computed(() => mediaSnapshot.value?.timeline?.minSeekMs ?? 0)
-const seekMaximum = computed(() => {
-  const timeline = mediaSnapshot.value?.timeline
-  if (!timeline) return 0
-  return timeline.maxSeekMs > timeline.minSeekMs ? timeline.maxSeekMs : timeline.endMs
-})
-const canSeek = computed(
-  () => Boolean(mediaSnapshot.value?.capabilities.canSeek) && seekMaximum.value > seekMinimum.value,
+const currentWindowMode = computed(() => readWindowMode(settings.value))
+const launchOnStartup = computed(() => readLaunchOnStartup(settings.value))
+const previewAccentColor = computed(() => mediaSnapshot.value?.accentColor || 'var(--primary)')
+const recentErrors = computed(() =>
+  [runtimeError.value, settingsError.value, taskbarDiagnosticError.value, mediaSnapshotError.value]
+    .filter((error): error is string => Boolean(error))
+    .slice(-5),
 )
 
-const positionOptions = [
+const navigationItems: ReadonlyArray<{
+  id: SettingsSection
+  label: string
+  icon: typeof PanelTopIcon
+}> = [
+  { id: 'taskbar', label: '任务栏', icon: PanelTopIcon },
+  { id: 'appearance', label: '外观', icon: PaletteIcon },
+  { id: 'media', label: '媒体', icon: Music2Icon },
+  { id: 'general', label: '常规', icon: Settings2Icon },
+  { id: 'diagnostics', label: '诊断与关于', icon: ActivityIcon },
+]
+
+const positionOptions: ReadonlyArray<{ value: TaskbarPosition; label: string }> = [
   { value: 'left', label: '靠左' },
   { value: 'center', label: '居中' },
   { value: 'right', label: '靠右' },
-] as const
-
+]
 const colorModeOptions: ReadonlyArray<{ value: ColorMode; label: string }> = [
   { value: 'system', label: '跟随系统' },
   { value: 'dark', label: '深色' },
   { value: 'light', label: '浅色' },
 ]
-
 const progressStyleOptions: ReadonlyArray<{ value: ProgressStyle; label: string }> = [
   { value: 'underline', label: '底部细线' },
   { value: 'background-gradient', label: '背景渐变' },
 ]
-
 const playerKindLabels: Record<MediaPlayerKind, string> = {
   qqMusic: 'QQ 音乐',
   neteaseCloudMusic: '网易云音乐',
@@ -94,191 +160,147 @@ const playerKindLabels: Record<MediaPlayerKind, string> = {
   qishuiMusic: '汽水音乐',
   other: '普通系统媒体',
 }
-
 const activityReasonLabels: Record<MediaActivityReason, string> = {
   detectedPlaying: '启动时已在播放',
   playbackStarted: '开始播放',
-  trackChanged: '切歌',
+  trackChanged: '切换歌曲',
   becameCurrent: '成为系统当前会话',
 }
-
 const taskbarOccupancySourceLabels = {
   uiAutomation: 'UI Automation',
   win32Fallback: 'Win32 子窗口回退',
 } as const
 
-/** 序列化诊断快照，但不把可能很长的封面 base64 正文插入页面 DOM。 */
-function serializeMediaSnapshot(snapshot: MediaSnapshot | null): string {
-  if (!snapshot) return 'null'
-
-  const artworkSummary = snapshot.artworkDataUrl
-    ? `${snapshot.artworkDataUrl.slice(0, snapshot.artworkDataUrl.indexOf(',') + 1)}<已省略，共 ${snapshot.artworkDataUrl.length} 字符>`
-    : null
-
-  return JSON.stringify({ ...snapshot, artworkDataUrl: artworkSummary }, null, 2)
-}
-
-/** 将 Rust 返回的 Unix 毫秒时间戳转换为本地可读时间。 */
+/** 将 Unix 毫秒时间戳转换为本地时间。 */
 function formatStartedAt(startedAtUnixMs: number): string {
   return new Date(startedAtUnixMs).toLocaleString()
 }
 
-/** 将毫秒格式化为设置页验证 seek 时易读的时长。 */
-function formatDuration(milliseconds: number): string {
-  const safeMilliseconds = Math.max(0, milliseconds)
-  const totalSeconds = Math.floor(safeMilliseconds / 1000)
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`
+/** 将布尔控制能力转换为诊断页统一使用的中文状态。 */
+function formatCapability(supported: boolean): string {
+  return supported ? '支持' : '不支持'
 }
 
-/** 从 Tauri 的未知拒绝值中提取可读的结构化控制错误。 */
-function readControlErrorMessage(error: unknown): string {
-  if (typeof error === 'object' && error && 'message' in error) return String(error.message)
-  return String(error)
-}
-
-/** 记录滑块预览位置；拖动期间不让播放器的时间轴事件把手柄拉回去。 */
-function handleSeekPreview(value: number[]): void {
-  seekValue.value = value
-  isSeekPreviewing.value = true
-  seekFeedback.value = ''
-}
-
-/** 用户释放滑块后只提交一次 seek，避免拖动时连续调用播放器接口。 */
-async function commitSeek(value: number[]): Promise<void> {
-  isSeekPreviewing.value = false
-  const positionMs = value[0]
-  if (!canSeek.value || positionMs === undefined || isSeekPending.value) return
-
-  isSeekPending.value = true
-  seekFeedback.value = ''
+/** 保存一个局部设置补丁，并保留 Rust 返回的规范化完整设置。 */
+async function saveSettingsPatch(patch: SettingsPayload): Promise<void> {
+  if (!settings.value || isSavingSettings.value) return
+  isSavingSettings.value = true
+  settingsError.value = undefined
   try {
-    await controlMedia({ type: 'seek', positionMs: Math.round(positionMs) })
-    seekFeedback.value = `已请求跳转到 ${formatDuration(positionMs)}`
+    settings.value = await updateSettings({ ...settings.value, ...patch })
   } catch (error) {
-    seekFeedback.value = `跳转失败：${readControlErrorMessage(error)}`
+    settingsError.value = error instanceof Error ? error.message : String(error)
   } finally {
-    isSeekPending.value = false
+    isSavingSettings.value = false
   }
 }
 
-/** 加载共享运行状态，并保留可直接诊断的命令错误。 */
+/** 接收单选组的未知值，只保存合法的任务栏位置。 */
+function handlePositionChange(position: unknown): void {
+  if (
+    (position === 'left' || position === 'center' || position === 'right') &&
+    position !== currentPosition.value
+  )
+    void saveSettingsPatch({ position })
+}
+
+/** 接收单选组的未知值，只保存合法的颜色模式。 */
+function handleColorModeChange(colorMode: unknown): void {
+  if (
+    (colorMode === 'system' || colorMode === 'dark' || colorMode === 'light') &&
+    colorMode !== currentColorMode.value
+  )
+    void saveSettingsPatch({ colorMode })
+}
+
+/** 接收单选组的未知值，只保存合法的进度样式。 */
+function handleProgressStyleChange(progressStyle: unknown): void {
+  if (
+    (progressStyle === 'underline' || progressStyle === 'background-gradient') &&
+    progressStyle !== currentProgressStyle.value
+  )
+    void saveSettingsPatch({ progressStyle })
+}
+
+/** 提交最小宽度，并保证它不会超过当前最大宽度。 */
+function commitMinimumWidth(value: number[]): void {
+  const width = value[0]
+  if (width !== undefined)
+    void saveSettingsPatch({ minWidth: Math.min(width, maxWidthDraft.value[0] ?? width) })
+}
+
+/** 提交最大宽度，并保证它不会小于当前最小宽度。 */
+function commitMaximumWidth(value: number[]): void {
+  const width = value[0]
+  if (width !== undefined)
+    void saveSettingsPatch({ maxWidth: Math.max(width, minWidthDraft.value[0] ?? width) })
+}
+
+/** 并行读取应用启动信息和 Windows 构建号，单项失败不遮住另一项。 */
 async function loadRuntimeInfo(): Promise<void> {
-  try {
-    runtimeInfo.value = await getRuntimeInfo()
-  } catch (error) {
-    runtimeError.value = error instanceof Error ? error.message : String(error)
-  }
+  const [runtimeResult, windowsResult] = await Promise.allSettled([
+    getRuntimeInfo(),
+    getWindowsVersion(),
+  ])
+  if (runtimeResult.status === 'fulfilled') runtimeInfo.value = runtimeResult.value
+  if (windowsResult.status === 'fulfilled') windowsVersion.value = windowsResult.value
+
+  const errors: string[] = []
+  if (runtimeResult.status === 'rejected') errors.push(String(runtimeResult.reason))
+  if (windowsResult.status === 'rejected') errors.push(String(windowsResult.reason))
+  runtimeError.value = errors.length > 0 ? errors.join('；') : undefined
 }
 
-/** 读取 Rust 持有的完整设置，作为后续更新的基础数据。 */
+/** 读取 Rust 持有的完整设置，供页面展示和局部更新。 */
 async function loadSettings(): Promise<void> {
   try {
     settings.value = await getSettings()
+    settingsError.value = undefined
   } catch (error) {
     settingsError.value = error instanceof Error ? error.message : String(error)
   }
 }
 
-/** 读取任务栏原生控件占用矩形，供 9.4 在设置页直接验证。 */
-async function loadTaskbarOccupancy(): Promise<void> {
+/** 并行读取任务栏身份、DPI 和占用矩形，形成一次诊断刷新。 */
+async function loadTaskbarDiagnostics(): Promise<void> {
+  taskbarDiagnosticError.value = undefined
   try {
-    taskbarOccupancy.value = await getTaskbarOccupiedRegions()
-    taskbarOccupancyError.value = undefined
+    const [identity, dpi, occupancy] = await Promise.all([
+      getTaskbarIdentity(),
+      getTaskbarDpi(),
+      getTaskbarOccupiedRegions(),
+    ])
+    taskbarIdentity.value = identity
+    taskbarDpi.value = dpi
+    taskbarOccupancy.value = occupancy
   } catch (error) {
-    taskbarOccupancyError.value = error instanceof Error ? error.message : String(error)
+    taskbarDiagnosticError.value = error instanceof Error ? error.message : String(error)
   }
 }
 
-/** 只替换位置字段，并将其余设置原样交还 Rust 保存。 */
-async function handlePositionChange(position: unknown): Promise<void> {
-  if (
-    !settings.value ||
-    typeof position !== 'string' ||
-    !position ||
-    position === currentPosition.value
-  )
-    return
-
-  isSavingSettings.value = true
-  settingsError.value = undefined
-
+/** 打开 Rust 日志目录，并在失败时把原因留在诊断页。 */
+async function handleOpenLogDirectory(): Promise<void> {
+  logDirectoryError.value = undefined
   try {
-    settings.value = await updateSettings({ ...settings.value, position })
+    await openLogDirectory()
   } catch (error) {
-    settingsError.value = error instanceof Error ? error.message : String(error)
-  } finally {
-    isSavingSettings.value = false
+    logDirectoryError.value = error instanceof Error ? error.message : String(error)
   }
 }
 
-/** 只替换颜色模式字段，并让 Rust 保存后向所有窗口广播新设置。 */
-async function handleColorModeChange(colorMode: unknown): Promise<void> {
-  if (
-    !settings.value ||
-    typeof colorMode !== 'string' ||
-    !colorMode ||
-    colorMode === currentColorMode.value
-  )
-    return
-
-  isSavingSettings.value = true
-  settingsError.value = undefined
-
-  try {
-    settings.value = await updateSettings({ ...settings.value, colorMode })
-  } catch (error) {
-    settingsError.value = error instanceof Error ? error.message : String(error)
-  } finally {
-    isSavingSettings.value = false
-  }
-}
-
-/** 只替换进度样式字段，保存后由设置事件实时更新 Bar。 */
-async function handleProgressStyleChange(progressStyle: unknown): Promise<void> {
-  if (
-    !settings.value ||
-    typeof progressStyle !== 'string' ||
-    !progressStyle ||
-    progressStyle === currentProgressStyle.value
-  )
-    return
-
-  isSavingSettings.value = true
-  settingsError.value = undefined
-
-  try {
-    settings.value = await updateSettings({ ...settings.value, progressStyle })
-  } catch (error) {
-    settingsError.value = error instanceof Error ? error.message : String(error)
-  } finally {
-    isSavingSettings.value = false
-  }
-}
-
-/** 订阅统一媒体事件并读取初始快照，供当前诊断页面直接检查 JSON。 */
+/** 订阅统一媒体快照和轻量时间轴事件，并读取首次快照。 */
 async function startMediaSnapshotListener(): Promise<void> {
   try {
-    const stopListener = await listenToCurrentMediaSnapshotChanges((snapshot) => {
+    const stopSnapshot = await listenToCurrentMediaSnapshotChanges((snapshot) => {
       mediaSnapshot.value = snapshot
       mediaSnapshotError.value = undefined
     })
-    if (hasUnmounted) {
-      stopListener()
-      return
-    }
-
-    stopMediaSnapshotListener = stopListener
-    // 时间轴使用轻量事件局部更新，避免仅因位置变化就再次传输封面 data URL。
+    if (hasUnmounted) return stopSnapshot()
+    stopMediaSnapshotListener = stopSnapshot
     const stopTimeline = await listenToCurrentTimelineChanges((timeline) => {
       if (mediaSnapshot.value) mediaSnapshot.value = { ...mediaSnapshot.value, timeline }
     })
-    if (hasUnmounted) {
-      stopTimeline()
-      return
-    }
-
+    if (hasUnmounted) return stopTimeline()
     stopTimelineListener = stopTimeline
     mediaSnapshot.value = await getCurrentMediaSnapshot()
   } catch (error) {
@@ -286,17 +308,13 @@ async function startMediaSnapshotListener(): Promise<void> {
   }
 }
 
-/** 订阅会话列表变化，并读取首次打开设置页时已经存在的播放器身份。 */
+/** 订阅播放器会话列表，并读取页面打开前已存在的会话。 */
 async function startMediaSessionIdentityListener(): Promise<void> {
   try {
     const stopListener = await listenToMediaSessionIdentityChanges((identities) => {
       mediaSessionIdentities.value = identities
     })
-    if (hasUnmounted) {
-      stopListener()
-      return
-    }
-
+    if (hasUnmounted) return stopListener()
     stopMediaSessionIdentityListener = stopListener
     mediaSessionIdentities.value = await getMediaSessionIdentities()
   } catch (error) {
@@ -304,17 +322,13 @@ async function startMediaSessionIdentityListener(): Promise<void> {
   }
 }
 
-/** 订阅所有会话的活动记录，用递增序号直观验证时间轴更新不会抢占活跃度。 */
+/** 订阅播放器活动记录，帮助解释当前媒体为什么被选中。 */
 async function startMediaSessionActivityListener(): Promise<void> {
   try {
     const stopListener = await listenToMediaSessionActivityChanges((activities) => {
       mediaSessionActivities.value = activities
     })
-    if (hasUnmounted) {
-      stopListener()
-      return
-    }
-
+    if (hasUnmounted) return stopListener()
     stopMediaSessionActivityListener = stopListener
     mediaSessionActivities.value = await getMediaSessionActivities()
   } catch (error) {
@@ -322,22 +336,27 @@ async function startMediaSessionActivityListener(): Promise<void> {
   }
 }
 
+watch(
+  settings,
+  (value) => {
+    const minimumWidth = readMinimumWidth(value)
+    const maximumWidth = readMaximumWidth(value)
+    const manualOffset = readManualOffset(value)
+    if (minimumWidth !== undefined) minWidthDraft.value = [minimumWidth]
+    if (maximumWidth !== undefined) maxWidthDraft.value = [maximumWidth]
+    if (manualOffset !== undefined) manualOffsetDraft.value = [manualOffset]
+  },
+  { immediate: true },
+)
+
 onMounted(() => {
   void loadRuntimeInfo()
   void loadSettings()
-  void loadTaskbarOccupancy()
+  void loadTaskbarDiagnostics()
   void startMediaSnapshotListener()
   void startMediaSessionIdentityListener()
   void startMediaSessionActivityListener()
 })
-
-watch(
-  () => [mediaSnapshot.value?.sessionKey, mediaSnapshot.value?.timeline?.positionMs] as const,
-  ([, positionMs]) => {
-    if (!isSeekPreviewing.value) seekValue.value = [positionMs ?? 0]
-  },
-  { immediate: true },
-)
 
 onBeforeUnmount(() => {
   hasUnmounted = true
@@ -349,234 +368,548 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="bg-background flex min-h-screen flex-col justify-start gap-1 p-6">
-    <p class="text-muted-foreground text-sm">Configuration surface</p>
-    <h1 class="text-2xl font-semibold">Muse Bar Settings</h1>
-    <p class="text-sm">
-      Window label: <code>{{ windowLabel }}</code>
-    </p>
-    <section aria-labelledby="runtime-heading" class="mt-4 flex flex-col gap-2">
-      <h2 id="runtime-heading" class="text-lg font-medium">Rust runtime info</h2>
-      <dl v-if="runtimeInfo" class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-        <dt class="text-muted-foreground">Version</dt>
-        <dd>{{ runtimeInfo.applicationVersion }}</dd>
-        <dt class="text-muted-foreground">Started at</dt>
-        <dd>{{ formatStartedAt(runtimeInfo.startedAtUnixMs) }}</dd>
-      </dl>
-      <p v-else-if="runtimeError" role="alert" class="text-destructive text-sm">
-        {{ runtimeError }}
-      </p>
-      <p v-else class="text-muted-foreground text-sm">Loading from Rust…</p>
-    </section>
-    <section aria-labelledby="settings-heading" class="mt-4 flex flex-col gap-2">
-      <h2 id="settings-heading" class="text-lg font-medium">Taskbar position</h2>
-      <ToggleGroup
-        type="single"
-        variant="outline"
-        :disabled="isSavingSettings || !settings"
-        :model-value="currentPosition"
-        @update:model-value="handlePositionChange"
-      >
-        <ToggleGroupItem
-          v-for="option in positionOptions"
-          :key="option.value"
-          :value="option.value"
-          :aria-label="option.label"
-        >
-          {{ option.label }}
-        </ToggleGroupItem>
-      </ToggleGroup>
-      <p v-if="settingsError" role="alert" class="text-destructive text-sm">
-        {{ settingsError }}
-      </p>
-      <p v-else class="text-muted-foreground text-sm">
-        Current value: {{ currentPosition ?? 'Loading…' }}
-      </p>
-    </section>
-    <section aria-labelledby="color-mode-heading" class="mt-4 flex flex-col gap-2">
-      <h2 id="color-mode-heading" class="text-lg font-medium">颜色模式</h2>
-      <ToggleGroup
-        type="single"
-        variant="outline"
-        :disabled="isSavingSettings || !settings"
-        :model-value="currentColorMode"
-        @update:model-value="handleColorModeChange"
-      >
-        <ToggleGroupItem
-          v-for="option in colorModeOptions"
-          :key="option.value"
-          :value="option.value"
-          :aria-label="option.label"
-        >
-          {{ option.label }}
-        </ToggleGroupItem>
-      </ToggleGroup>
-      <p class="text-muted-foreground text-sm">当前值：{{ currentColorMode }}</p>
-    </section>
-    <section aria-labelledby="progress-style-heading" class="mt-4 flex flex-col gap-2">
-      <h2 id="progress-style-heading" class="text-lg font-medium">进度样式</h2>
-      <ToggleGroup
-        type="single"
-        variant="outline"
-        :disabled="isSavingSettings || !settings"
-        :model-value="currentProgressStyle"
-        @update:model-value="handleProgressStyleChange"
-      >
-        <ToggleGroupItem
-          v-for="option in progressStyleOptions"
-          :key="option.value"
-          :value="option.value"
-          :aria-label="option.label"
-        >
-          {{ option.label }}
-        </ToggleGroupItem>
-      </ToggleGroup>
-      <p class="text-muted-foreground text-sm">
-        背景渐变只覆盖已播放部分，并从左侧向当前位置逐渐增强。
-      </p>
-    </section>
-    <section aria-labelledby="taskbar-occupancy-heading" class="mt-4 flex flex-col gap-2">
-      <div class="flex items-center justify-between gap-3">
-        <h2 id="taskbar-occupancy-heading" class="text-lg font-medium">任务栏占用区域</h2>
-        <button
-          type="button"
-          class="text-muted-foreground hover:text-foreground text-sm underline-offset-4 hover:underline"
-          @click="loadTaskbarOccupancy"
-        >
-          重新读取
-        </button>
-      </div>
-      <p v-if="taskbarOccupancyError" role="alert" class="text-destructive text-sm">
-        {{ taskbarOccupancyError }}
-      </p>
-      <template v-else-if="taskbarOccupancy">
-        <p class="text-muted-foreground text-sm">
-          来源：{{ taskbarOccupancySourceLabels[taskbarOccupancy.source] }}；检测到
-          {{ taskbarOccupancy.regions.length }} 个区域
-        </p>
-        <p
-          v-if="taskbarOccupancy.fallbackReason"
-          class="text-muted-foreground rounded-md border px-3 py-2 text-sm"
-        >
-          回退原因：{{ taskbarOccupancy.fallbackReason }}
-        </p>
-        <p v-if="taskbarOccupancy.regions.length === 0" class="text-muted-foreground text-sm">
-          当前没有读取到可用的任务栏控件矩形。
-        </p>
-        <ul v-else class="flex max-h-72 flex-col gap-1 overflow-auto text-sm">
-          <li
-            v-for="(region, index) in taskbarOccupancy.regions"
-            :key="`${region.left}-${region.right}-${region.top}-${region.bottom}-${index}`"
-            class="bg-muted grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 rounded-md border px-3 py-2"
+  <SidebarProvider class="min-h-screen">
+    <Sidebar collapsible="none" class="border-r">
+      <SidebarHeader class="border-b p-4">
+        <div class="flex items-center gap-3">
+          <div
+            class="bg-primary text-primary-foreground flex size-9 items-center justify-center rounded-lg"
           >
-            <span class="truncate" :title="region.name || region.className">
-              {{ region.name || region.className || '未命名控件' }}
-            </span>
-            <code class="text-muted-foreground">
-              {{ region.left }},{{ region.top }} → {{ region.right }},{{ region.bottom }}
-            </code>
-            <code class="text-muted-foreground col-span-2 truncate" :title="region.className">
-              {{ region.className || '无类名' }} · {{ region.width }}×{{ region.height }}
-            </code>
-          </li>
-        </ul>
-      </template>
-      <p v-else class="text-muted-foreground text-sm">正在读取任务栏控件…</p>
-    </section>
-    <section aria-labelledby="media-snapshot-heading" class="mt-4 flex flex-col gap-2">
-      <h2 id="media-snapshot-heading" class="text-lg font-medium">MediaSnapshot</h2>
-      <p v-if="mediaSnapshotError" role="alert" class="text-destructive text-sm">
-        {{ mediaSnapshotError }}
-      </p>
-      <div class="bg-muted flex flex-col gap-3 rounded-md border p-3">
+            <Music2Icon class="size-5" />
+          </div>
+          <div>
+            <p class="font-semibold">Muse Bar</p>
+            <p class="text-muted-foreground text-xs">设置</p>
+          </div>
+        </div>
+      </SidebarHeader>
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupLabel>设置</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <SidebarMenuItem v-for="item in navigationItems" :key="item.id">
+                <SidebarMenuButton
+                  :is-active="activeSection === item.id"
+                  @click="activeSection = item.id"
+                >
+                  <component :is="item.icon" /><span>{{ item.label }}</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+    </Sidebar>
+
+    <SidebarInset class="min-w-0">
+      <header
+        class="bg-background/95 sticky top-0 z-10 flex h-16 items-center border-b px-6 backdrop-blur"
+      >
         <div>
-          <h3 class="font-medium">Seek 验证</h3>
-          <p class="text-muted-foreground text-sm">拖动时只预览，释放后向播放器提交一次。</p>
+          <h1 class="text-lg font-semibold">
+            {{ navigationItems.find((item) => item.id === activeSection)?.label }}
+          </h1>
+          <p class="text-muted-foreground text-xs">修改会立即同步到任务栏 Bar</p>
         </div>
-        <Slider
-          :model-value="seekValue"
-          :min="seekMinimum"
-          :max="seekMaximum"
-          :step="1000"
-          :disabled="!canSeek || isSeekPending"
-          aria-label="跳转播放位置"
-          @update:model-value="handleSeekPreview"
-          @value-commit="commitSeek"
-        />
-        <div class="text-muted-foreground flex justify-between text-xs tabular-nums">
-          <span>{{ formatDuration(seekMinimum) }}</span>
-          <span>{{ formatDuration(seekValue[0] ?? 0) }}</span>
-          <span>{{ formatDuration(seekMaximum) }}</span>
-        </div>
-        <p
-          v-if="seekFeedback"
-          :class="
-            seekFeedback.startsWith('跳转失败') ? 'text-destructive' : 'text-muted-foreground'
-          "
-          class="text-sm"
-        >
-          {{ seekFeedback }}
-        </p>
-        <p v-else-if="!canSeek" class="text-muted-foreground text-sm">
-          当前会话未提供可用的 seek 能力或有效时间轴。
-        </p>
-      </div>
-      <pre
-        v-if="!mediaSnapshotError"
-        class="bg-muted max-h-72 overflow-auto rounded-md border p-3 text-xs whitespace-pre-wrap"
-        >{{ mediaSnapshotJson }}</pre>
-      <h3 class="mt-2 font-medium">检测到的媒体会话</h3>
-      <p v-if="mediaSessionIdentities.length === 0" class="text-muted-foreground text-sm">
-        当前没有媒体会话
-      </p>
-      <ul v-else class="flex flex-col gap-1 text-sm">
-        <li
-          v-for="(identity, index) in mediaSessionIdentities"
-          :key="`${identity.sourceAppId}-${index}`"
-          class="bg-muted rounded-md border px-3 py-2"
-        >
-          <span class="font-medium">{{ playerKindLabels[identity.playerKind] }}</span>
-          <code class="text-muted-foreground ml-2 break-all">{{ identity.sourceAppId }}</code>
-        </li>
-      </ul>
-      <h3 class="mt-2 font-medium">播放器活动记录</h3>
-      <p v-if="mediaSessionActivities.length === 0" class="text-muted-foreground text-sm">
-        暂无活动记录
-      </p>
-      <dl v-else class="flex flex-col gap-2 text-sm">
-        <div
-          v-for="activity in mediaSessionActivities"
-          :key="activity.sessionKey"
-          class="bg-muted grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md border px-3 py-2"
-        >
-          <dt class="text-muted-foreground">播放器</dt>
-          <dd>{{ playerKindLabels[activity.playerKind] }} · {{ activity.sourceAppId }}</dd>
-          <dt class="text-muted-foreground">曲目</dt>
-          <dd>{{ activity.title || '未知标题' }} · {{ activity.artist || '未知歌手' }}</dd>
-          <dt class="text-muted-foreground">播放</dt>
-          <dd>
-            {{ activity.isPlaying ? '播放中' : activity.isPaused ? '已暂停' : '其他状态' }}
-          </dd>
-          <dt class="text-muted-foreground">活动序号</dt>
-          <dd>{{ activity.activitySequence ?? '尚无' }}</dd>
-          <dt class="text-muted-foreground">活动原因</dt>
-          <dd>
-            {{
-              activity.lastActivityReason
-                ? activityReasonLabels[activity.lastActivityReason]
-                : '尚无'
-            }}
-          </dd>
-          <dt class="text-muted-foreground">活动时间</dt>
-          <dd>
-            {{
-              activity.lastActivityAtUnixMs
-                ? new Date(activity.lastActivityAtUnixMs).toLocaleString()
-                : '尚无'
-            }}
-          </dd>
-        </div>
-      </dl>
-    </section>
-  </main>
+      </header>
+
+      <main class="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 p-6">
+        <Alert v-if="settingsError" variant="destructive">
+          <AlertCircleIcon />
+          <AlertTitle>设置保存失败</AlertTitle>
+          <AlertDescription>{{ settingsError }}</AlertDescription>
+        </Alert>
+
+        <template v-if="activeSection === 'taskbar'">
+          <Card>
+            <CardHeader>
+              <CardTitle>位置与尺寸</CardTitle>
+              <CardDescription>控制 Bar 在主任务栏中的位置和内容宽度范围。</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <FieldGroup>
+                <Field>
+                  <FieldLabel>任务栏位置</FieldLabel>
+                  <ToggleGroup
+                    type="single"
+                    variant="outline"
+                    :disabled="isSavingSettings || !settings"
+                    :model-value="currentPosition"
+                    @update:model-value="handlePositionChange"
+                  >
+                    <ToggleGroupItem
+                      v-for="option in positionOptions"
+                      :key="option.value"
+                      :value="option.value"
+                      >{{ option.label }}</ToggleGroupItem
+                    >
+                  </ToggleGroup>
+                  <FieldDescription
+                    >左右位置贴近对应边缘；居中位置直接覆盖在任务栏中央。</FieldDescription
+                  >
+                </Field>
+                <Field>
+                  <div class="flex items-center justify-between gap-4">
+                    <FieldLabel>最小宽度</FieldLabel>
+                    <Badge variant="outline"
+                      >{{ minWidthDraft[0] ?? '读取中'
+                      }}<template v-if="minWidthDraft[0] !== undefined"> px</template></Badge
+                    >
+                  </div>
+                  <Slider
+                    aria-label="Bar 最小宽度"
+                    :model-value="minWidthDraft"
+                    :min="200"
+                    :max="maxWidthDraft[0] ?? 520"
+                    :step="4"
+                    :disabled="isSavingSettings || !settings"
+                    @update:model-value="minWidthDraft = $event"
+                    @value-commit="commitMinimumWidth"
+                  />
+                  <FieldDescription>短标题时 Bar 不会窄于该值。</FieldDescription>
+                </Field>
+                <Field>
+                  <div class="flex items-center justify-between gap-4">
+                    <FieldLabel>最大宽度</FieldLabel>
+                    <Badge variant="outline"
+                      >{{ maxWidthDraft[0] ?? '读取中'
+                      }}<template v-if="maxWidthDraft[0] !== undefined"> px</template></Badge
+                    >
+                  </div>
+                  <Slider
+                    aria-label="Bar 最大宽度"
+                    :model-value="maxWidthDraft"
+                    :min="minWidthDraft[0] ?? 200"
+                    :max="520"
+                    :step="4"
+                    :disabled="isSavingSettings || !settings"
+                    @update:model-value="maxWidthDraft = $event"
+                    @value-commit="commitMaximumWidth"
+                  />
+                  <FieldDescription>长标题超过最大宽度后会截断，不挤压控制按钮。</FieldDescription>
+                </Field>
+                <Field data-disabled="true">
+                  <div class="flex items-center justify-between gap-4">
+                    <FieldContent>
+                      <FieldTitle>手动偏移</FieldTitle>
+                      <FieldDescription
+                        >阶段 9.7 已暂缓，底层字段保留但当前不应用。</FieldDescription
+                      >
+                    </FieldContent>
+                    <Badge variant="secondary">暂未启用</Badge>
+                  </div>
+                  <Slider
+                    aria-label="手动偏移暂未启用"
+                    :model-value="manualOffsetDraft"
+                    :min="-200"
+                    :max="200"
+                    :step="1"
+                    disabled
+                  />
+                </Field>
+              </FieldGroup>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>宿主模式</CardTitle>
+              <CardDescription>当前版本使用已经验证通过的 Child 真嵌入方案。</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Field orientation="horizontal">
+                <FieldContent>
+                  <FieldTitle>Owner 兼容模式</FieldTitle>
+                  <FieldDescription
+                    >Owner 留待以后实现；当前实际模式为
+                    {{
+                      currentWindowMode === 'auto' ? 'Child' : currentWindowMode
+                    }}。</FieldDescription
+                  >
+                </FieldContent>
+                <Switch :model-value="false" disabled aria-label="Owner 兼容模式暂未启用" />
+              </Field>
+            </CardContent>
+          </Card>
+        </template>
+
+        <template v-else-if="activeSection === 'appearance'">
+          <Card>
+            <CardHeader>
+              <CardTitle>颜色模式</CardTitle>
+              <CardDescription>跟随 Windows，或固定 Muse Bar 的明暗主题。</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ToggleGroup
+                type="single"
+                variant="outline"
+                :disabled="isSavingSettings || !settings"
+                :model-value="currentColorMode"
+                @update:model-value="handleColorModeChange"
+              >
+                <ToggleGroupItem
+                  v-for="option in colorModeOptions"
+                  :key="option.value"
+                  :value="option.value"
+                  >{{ option.label }}</ToggleGroupItem
+                >
+              </ToggleGroup>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>进度样式</CardTitle>
+              <CardDescription>两种样式都使用当前封面提取并增强后的主色。</CardDescription>
+            </CardHeader>
+            <CardContent class="space-y-6">
+              <ToggleGroup
+                type="single"
+                variant="outline"
+                :disabled="isSavingSettings || !settings"
+                :model-value="currentProgressStyle"
+                @update:model-value="handleProgressStyleChange"
+              >
+                <ToggleGroupItem
+                  v-for="option in progressStyleOptions"
+                  :key="option.value"
+                  :value="option.value"
+                  >{{ option.label }}</ToggleGroupItem
+                >
+              </ToggleGroup>
+              <div class="bg-muted flex min-h-36 items-center justify-center rounded-xl border p-6">
+                <div
+                  class="bg-card text-card-foreground relative flex h-14 w-full max-w-md items-center gap-3 overflow-hidden rounded-xl border px-3 shadow-sm"
+                >
+                  <div
+                    v-if="currentProgressStyle === 'background-gradient'"
+                    class="pointer-events-none absolute inset-y-0 left-0 w-3/5"
+                    :style="{
+                      background: `linear-gradient(90deg, transparent, color-mix(in srgb, ${previewAccentColor} 42%, transparent))`,
+                    }"
+                  />
+                  <Avatar class="relative size-10 rounded-md">
+                    <AvatarImage
+                      v-if="mediaSnapshot?.artworkDataUrl"
+                      :src="mediaSnapshot.artworkDataUrl"
+                    />
+                    <AvatarFallback class="rounded-md">
+                      <Music2Icon class="size-4" />
+                    </AvatarFallback>
+                  </Avatar>
+                  <div class="relative min-w-0 flex-1">
+                    <p class="truncate text-sm font-medium">
+                      {{ mediaSnapshot?.title || 'Muse Bar 预览' }}
+                    </p>
+                    <p class="text-muted-foreground truncate text-xs">
+                      {{ mediaSnapshot?.artist || '当前歌曲歌手' }}
+                    </p>
+                  </div>
+                  <div class="relative shrink-0 text-sm" aria-hidden="true">◀　Ⅱ　▶</div>
+                  <div
+                    v-if="currentProgressStyle === 'underline'"
+                    class="absolute bottom-0 left-0 h-0.5 w-3/5"
+                    :style="{ backgroundColor: previewAccentColor }"
+                  />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </template>
+
+        <template v-else-if="activeSection === 'media'">
+          <Alert v-if="mediaSnapshotError" variant="destructive">
+            <AlertCircleIcon />
+            <AlertTitle>媒体状态读取失败</AlertTitle>
+            <AlertDescription>{{ mediaSnapshotError }}</AlertDescription>
+          </Alert>
+          <Card>
+            <CardHeader>
+              <CardTitle>当前展示媒体</CardTitle>
+              <CardDescription>Bar 当前选择的系统媒体会话。</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div v-if="mediaSnapshot" class="flex items-center gap-4">
+                <Avatar class="size-16 rounded-lg">
+                  <AvatarImage
+                    v-if="mediaSnapshot.artworkDataUrl"
+                    :src="mediaSnapshot.artworkDataUrl"
+                  />
+                  <AvatarFallback class="rounded-lg">
+                    <Music2Icon />
+                  </AvatarFallback>
+                </Avatar>
+                <div class="min-w-0 flex-1">
+                  <p class="truncate font-semibold">{{ mediaSnapshot.title || '未知歌曲' }}</p>
+                  <p class="text-muted-foreground truncate text-sm">
+                    {{ mediaSnapshot.artist || '未知歌手' }}
+                  </p>
+                  <div class="mt-2 flex flex-wrap gap-2">
+                    <Badge>{{ playerKindLabels[mediaSnapshot.playerKind] }}</Badge>
+                    <Badge variant="outline">{{ mediaSnapshot.playbackStatus }}</Badge>
+                    <Badge variant="secondary">当前选择项</Badge>
+                  </div>
+                </div>
+              </div>
+              <p v-else class="text-muted-foreground text-sm">当前没有可展示的系统媒体会话。</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>控制能力</CardTitle>
+              <CardDescription>是否可用由播放器通过 Windows SMTC 声明。</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <dl v-if="mediaSnapshot" class="grid grid-cols-2 gap-3 sm:grid-cols-5">
+                <div
+                  v-for="capability in [
+                    ['播放', mediaSnapshot.capabilities.canPlay],
+                    ['暂停', mediaSnapshot.capabilities.canPause],
+                    ['上一曲', mediaSnapshot.capabilities.canPrevious],
+                    ['下一曲', mediaSnapshot.capabilities.canNext],
+                    ['跳转', mediaSnapshot.capabilities.canSeek],
+                  ]"
+                  :key="String(capability[0])"
+                  class="bg-muted rounded-lg border p-3 text-center"
+                >
+                  <dt class="text-sm font-medium">{{ capability[0] }}</dt>
+                  <dd class="text-muted-foreground mt-1 text-xs">
+                    {{ formatCapability(Boolean(capability[1])) }}
+                  </dd>
+                </div>
+              </dl>
+              <p v-else class="text-muted-foreground text-sm">选择媒体会话后显示控制能力。</p>
+              <p class="text-muted-foreground mt-4 text-sm">
+                不支持的能力会使 Bar 上对应按钮禁用，这通常表示播放器没有向 Windows 暴露该操作。
+              </p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>检测到的会话</CardTitle>
+              <CardDescription
+                >共 {{ mediaSessionIdentities.length }} 个系统媒体会话。</CardDescription
+              >
+            </CardHeader>
+            <CardContent class="space-y-2">
+              <p v-if="mediaSessionIdentities.length === 0" class="text-muted-foreground text-sm">
+                暂无媒体会话。
+              </p>
+              <template v-else>
+                <div
+                  v-for="identity in mediaSessionIdentities"
+                  :key="identity.sessionKey"
+                  class="flex items-center justify-between gap-3 rounded-lg border p-3"
+                >
+                  <div class="min-w-0">
+                    <p class="font-medium">{{ playerKindLabels[identity.playerKind] }}</p>
+                    <code class="text-muted-foreground block truncate text-xs">{{
+                      identity.sourceAppId
+                    }}</code>
+                  </div>
+                  <Badge v-if="identity.sessionKey === mediaSnapshot?.sessionKey">正在显示</Badge>
+                </div>
+              </template>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>最近活动</CardTitle>
+              <CardDescription>用于解释多个播放器同时存在时的选择顺序。</CardDescription>
+            </CardHeader>
+            <CardContent class="space-y-2">
+              <p v-if="mediaSessionActivities.length === 0" class="text-muted-foreground text-sm">
+                暂无有效活动记录。
+              </p>
+              <template v-else>
+                <div
+                  v-for="activity in mediaSessionActivities"
+                  :key="activity.sessionKey"
+                  class="rounded-lg border p-3"
+                >
+                  <div class="flex items-center justify-between gap-3">
+                    <p class="truncate font-medium">
+                      {{ activity.title || playerKindLabels[activity.playerKind] }}
+                    </p>
+                    <Badge variant="outline">{{
+                      activity.lastActivityReason
+                        ? activityReasonLabels[activity.lastActivityReason]
+                        : '尚未活动'
+                    }}</Badge>
+                  </div>
+                  <p class="text-muted-foreground mt-1 truncate text-xs">
+                    {{ activity.artist || activity.sourceAppId }}
+                  </p>
+                </div>
+              </template>
+            </CardContent>
+          </Card>
+        </template>
+
+        <template v-else-if="activeSection === 'general'">
+          <Card>
+            <CardHeader>
+              <CardTitle>应用行为</CardTitle>
+              <CardDescription>后台生命周期功能将在阶段 11 接入。</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <FieldGroup>
+                <Field orientation="horizontal">
+                  <FieldContent>
+                    <FieldTitle>开机启动</FieldTitle>
+                    <FieldDescription
+                      >当前设置为“{{ launchOnStartup ? '开启' : '关闭' }}”，启动项将在阶段 11.4
+                      实现。</FieldDescription
+                    >
+                  </FieldContent>
+                  <Switch :model-value="launchOnStartup" disabled aria-label="开机启动暂未启用" />
+                </Field>
+                <Field orientation="horizontal">
+                  <FieldContent>
+                    <FieldTitle>单实例与托盘</FieldTitle>
+                    <FieldDescription
+                      >托盘入口、单实例和关闭到托盘将在阶段 11 完成。</FieldDescription
+                    >
+                  </FieldContent>
+                  <Badge variant="secondary">下一阶段</Badge>
+                </Field>
+              </FieldGroup>
+            </CardContent>
+          </Card>
+        </template>
+
+        <template v-else>
+          <div class="flex justify-end gap-2">
+            <Button variant="outline" size="sm" @click="loadTaskbarDiagnostics">
+              <RefreshCwIcon />刷新诊断 </Button
+            ><Button size="sm" @click="handleOpenLogDirectory">
+              <FolderOpenIcon />打开日志目录
+            </Button>
+          </div>
+          <Alert v-if="logDirectoryError" variant="destructive">
+            <AlertCircleIcon />
+            <AlertTitle>无法打开日志目录</AlertTitle>
+            <AlertDescription>{{ logDirectoryError }}</AlertDescription>
+          </Alert>
+          <Card>
+            <CardHeader>
+              <CardTitle>运行环境</CardTitle>
+              <CardDescription>Muse Bar 当前进程与窗口信息。</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-3 text-sm">
+                <dt class="text-muted-foreground">Windows</dt>
+                <dd>
+                  {{
+                    windowsVersion
+                      ? `${windowsVersion.productName} · ${windowsVersion.version}（Build ${windowsVersion.build}）`
+                      : '读取中'
+                  }}
+                </dd>
+                <dt class="text-muted-foreground">应用版本</dt>
+                <dd>{{ runtimeInfo?.applicationVersion || '读取中' }}</dd>
+                <dt class="text-muted-foreground">启动时间</dt>
+                <dd>{{ runtimeInfo ? formatStartedAt(runtimeInfo.startedAtUnixMs) : '读取中' }}</dd>
+                <dt class="text-muted-foreground">窗口标签</dt>
+                <dd>
+                  <code>{{ windowLabel }}</code>
+                </dd>
+                <dt class="text-muted-foreground">实际宿主</dt>
+                <dd>
+                  <Badge>Child</Badge>
+                </dd>
+              </dl>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>任务栏状态</CardTitle>
+              <CardDescription>主任务栏身份、DPI 和原生控件测量结果。</CardDescription>
+            </CardHeader>
+            <CardContent class="space-y-4">
+              <Alert v-if="taskbarDiagnosticError" variant="destructive">
+                <AlertCircleIcon />
+                <AlertTitle>任务栏诊断失败</AlertTitle>
+                <AlertDescription>{{ taskbarDiagnosticError }}</AlertDescription>
+              </Alert>
+              <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-3 text-sm">
+                <dt class="text-muted-foreground">任务栏句柄</dt>
+                <dd>
+                  <code>{{
+                    taskbarIdentity
+                      ? `0x${taskbarIdentity.hwnd.toString(16).toUpperCase()}`
+                      : '读取中'
+                  }}</code>
+                </dd>
+                <dt class="text-muted-foreground">Explorer PID</dt>
+                <dd>{{ taskbarIdentity?.explorerProcessId ?? '读取中' }}</dd>
+                <dt class="text-muted-foreground">DPI</dt>
+                <dd>
+                  {{
+                    taskbarDpi
+                      ? `${taskbarDpi.dpi}（${Math.round(taskbarDpi.scaleFactor * 100)}%）`
+                      : '读取中'
+                  }}
+                </dd>
+                <dt class="text-muted-foreground">物理尺寸</dt>
+                <dd>
+                  {{
+                    taskbarDpi
+                      ? `${taskbarDpi.physicalRect.width} × ${taskbarDpi.physicalRect.height} px`
+                      : '读取中'
+                  }}
+                </dd>
+                <dt class="text-muted-foreground">占用区来源</dt>
+                <dd>
+                  {{
+                    taskbarOccupancy
+                      ? taskbarOccupancySourceLabels[taskbarOccupancy.source]
+                      : '读取中'
+                  }}
+                </dd>
+                <dt class="text-muted-foreground">占用区数量</dt>
+                <dd>{{ taskbarOccupancy?.regions.length ?? '读取中' }}</dd>
+                <dt class="text-muted-foreground">碰撞状态</dt>
+                <dd>未启用（按阶段 9.5 的简化定位规则）</dd>
+              </dl>
+              <Alert v-if="taskbarOccupancy?.fallbackReason">
+                <InfoIcon />
+                <AlertTitle>已使用 Win32 回退</AlertTitle>
+                <AlertDescription>{{ taskbarOccupancy.fallbackReason }}</AlertDescription>
+              </Alert>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>最近错误</CardTitle>
+              <CardDescription>本次设置窗口运行期间捕获的最近错误。</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <p v-if="recentErrors.length === 0" class="text-muted-foreground text-sm">
+                当前没有记录到错误。
+              </p>
+              <ul v-else class="space-y-2">
+                <li
+                  v-for="error in recentErrors"
+                  :key="error"
+                  class="text-destructive rounded-lg border p-3 text-sm"
+                >
+                  {{ error }}
+                </li>
+              </ul>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>关于 Muse Bar</CardTitle>
+              <CardDescription>Windows 11 任务栏系统媒体工具。</CardDescription>
+            </CardHeader>
+            <CardContent class="text-muted-foreground space-y-2 text-sm">
+              <p>当前版本聚焦主显示器、Child 真嵌入和 Windows SMTC 媒体会话。</p>
+              <p>歌词、Owner 回退、多屏同步和自动更新不属于当前首版范围。</p>
+            </CardContent>
+          </Card>
+        </template>
+      </main>
+    </SidebarInset>
+  </SidebarProvider>
 </template>

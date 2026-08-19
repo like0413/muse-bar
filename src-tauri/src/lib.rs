@@ -62,6 +62,8 @@ pub fn run() {
             commands::diagnostics::get_taskbar_identity,
             commands::diagnostics::get_taskbar_occupied_regions,
             commands::diagnostics::get_taskbar_rect,
+            commands::diagnostics::get_windows_version,
+            commands::diagnostics::open_log_directory,
             commands::media::get_current_media_metadata,
             commands::media::get_current_media_snapshot,
             commands::media::get_current_playback_capabilities,

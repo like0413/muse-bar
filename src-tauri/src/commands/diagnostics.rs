@@ -1,4 +1,18 @@
+use std::{fs, os::windows::process::CommandExt, process::Command};
+
 use serde::Serialize;
+use tauri::{AppHandle, Manager};
+
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// 前端诊断页显示的 Windows 产品名、版本号和构建号。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowsVersionDiagnostic {
+    product_name: String,
+    version: String,
+    build: u32,
+}
 
 /// 前端诊断页可读取的主任务栏身份信息。
 #[derive(Debug, Serialize)]
@@ -63,6 +77,46 @@ pub struct TaskbarOccupancyDiagnostic {
     source: String,
     fallback_reason: Option<String>,
     regions: Vec<TaskbarOccupiedRegionDiagnostic>,
+}
+
+/// 读取 Windows 自身报告的版本号，并避免诊断命令弹出控制台窗口。
+#[tauri::command]
+pub fn get_windows_version() -> Result<WindowsVersionDiagnostic, String> {
+    let output = Command::new("cmd.exe")
+        .args(["/D", "/C", "ver"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|error| format!("无法读取 Windows 版本：{error}"))?;
+
+    if !output.status.success() {
+        return Err(format!("Windows 版本命令返回失败状态：{}", output.status));
+    }
+
+    // `ver` 的本地化文字可能不是 UTF-8，但方括号内的数字始终是 ASCII。
+    let text = String::from_utf8_lossy(&output.stdout);
+    let version_text = text
+        .split_once('[')
+        .and_then(|(_, remainder)| remainder.split_once(']'))
+        .map(|(value, _)| value.trim())
+        .ok_or_else(|| "Windows 版本命令返回了无法识别的内容".to_owned())?;
+    let version = version_text
+        .trim_start_matches(|character: char| !character.is_ascii_digit())
+        .to_owned();
+    let build = version
+        .split('.')
+        .nth(2)
+        .and_then(|value| value.parse::<u32>().ok())
+        .ok_or_else(|| format!("无法从版本号 {version} 中读取构建号"))?;
+
+    Ok(WindowsVersionDiagnostic {
+        product_name: if build >= 22_000 {
+            "Windows 11".to_owned()
+        } else {
+            "Windows".to_owned()
+        },
+        version,
+        build,
+    })
 }
 
 impl TaskbarRectDiagnostic {
@@ -168,4 +222,21 @@ pub async fn get_taskbar_occupied_regions() -> Result<TaskbarOccupancyDiagnostic
     })
     .await
     .map_err(|error| format!("任务栏占用区域后台任务意外终止：{error}"))?
+}
+
+/// 创建应用日志目录，并交给 Windows 文件资源管理器打开。
+#[tauri::command]
+pub fn open_log_directory(app: AppHandle) -> Result<(), String> {
+    let log_directory = app
+        .path()
+        .app_log_dir()
+        .map_err(|error| format!("无法确定日志目录：{error}"))?;
+
+    fs::create_dir_all(&log_directory).map_err(|error| format!("无法创建日志目录：{error}"))?;
+    Command::new("explorer.exe")
+        .arg(&log_directory)
+        .spawn()
+        .map_err(|error| format!("无法打开日志目录：{error}"))?;
+
+    Ok(())
 }

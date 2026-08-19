@@ -4,6 +4,8 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 export type SettingsPayload = Record<string, unknown>
 export type ColorMode = 'system' | 'dark' | 'light'
 export type ProgressStyle = 'underline' | 'background-gradient'
+export type TaskbarPosition = 'left' | 'center' | 'right'
+export type WindowMode = 'auto' | 'owner'
 
 const SETTINGS_CHANGED_EVENT = 'settings-changed'
 
@@ -26,9 +28,10 @@ export function listenToSettingsChanges(
   })
 }
 
-/** 从尚未生成静态类型的设置载荷中安全读取任务栏位置。 */
-export function readTaskbarPosition(settings: SettingsPayload | undefined): string | undefined {
-  return typeof settings?.position === 'string' ? settings.position : undefined
+/** 从设置载荷中读取任务栏位置，异常值回退到产品默认的靠右。 */
+export function readTaskbarPosition(settings: SettingsPayload | undefined): TaskbarPosition {
+  const position = settings?.position
+  return position === 'left' || position === 'center' ? position : 'right'
 }
 
 /** 从设置载荷中读取颜色模式，旧设置缺少该字段时默认跟随系统。 */
@@ -40,4 +43,29 @@ export function readColorMode(settings: SettingsPayload | undefined): ColorMode 
 /** 从设置载荷中读取进度样式，缺少或无法识别时使用默认的底部细线。 */
 export function readProgressStyle(settings: SettingsPayload | undefined): ProgressStyle {
   return settings?.progressStyle === 'background-gradient' ? 'background-gradient' : 'underline'
+}
+
+/** 从设置载荷中读取 Bar 的最小逻辑宽度。 */
+export function readMinimumWidth(settings: SettingsPayload | undefined): number | undefined {
+  return typeof settings?.minWidth === 'number' ? settings.minWidth : undefined
+}
+
+/** 从设置载荷中读取 Bar 的最大逻辑宽度。 */
+export function readMaximumWidth(settings: SettingsPayload | undefined): number | undefined {
+  return typeof settings?.maxWidth === 'number' ? settings.maxWidth : undefined
+}
+
+/** 从设置载荷中读取预留的手动位置偏移。 */
+export function readManualOffset(settings: SettingsPayload | undefined): number | undefined {
+  return typeof settings?.manualOffset === 'number' ? settings.manualOffset : undefined
+}
+
+/** 从设置载荷中读取窗口宿主模式。 */
+export function readWindowMode(settings: SettingsPayload | undefined): WindowMode {
+  return settings?.windowMode === 'owner' ? 'owner' : 'auto'
+}
+
+/** 从设置载荷中读取开机启动开关。 */
+export function readLaunchOnStartup(settings: SettingsPayload | undefined): boolean {
+  return settings?.launchOnStartup === true
 }
