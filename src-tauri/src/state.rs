@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, RwLock,
     },
     time::SystemTime,
@@ -35,6 +35,7 @@ pub struct AppState {
     settings: RwLock<AppSettings>,
     bar_width_measurement: RwLock<Option<BarWidthMeasurement>>,
     bar_width_animation_revision: Arc<AtomicU64>,
+    bar_visible: AtomicBool,
 }
 
 impl AppState {
@@ -46,6 +47,7 @@ impl AppState {
             settings: RwLock::new(settings),
             bar_width_measurement: RwLock::new(None),
             bar_width_animation_revision: Arc::new(AtomicU64::new(0)),
+            bar_visible: AtomicBool::new(true),
         }
     }
 
@@ -122,5 +124,15 @@ impl AppState {
             .fetch_add(1, Ordering::AcqRel)
             + 1;
         (revision, Arc::clone(&self.bar_width_animation_revision))
+    }
+
+    /// 返回用户在本次运行中选择的临时 Bar 显示状态。
+    pub fn is_bar_visible(&self) -> bool {
+        self.bar_visible.load(Ordering::Acquire)
+    }
+
+    /// 原子切换临时 Bar 显示状态，并返回切换后的值。
+    pub fn toggle_bar_visibility(&self) -> bool {
+        !self.bar_visible.fetch_xor(true, Ordering::AcqRel)
     }
 }

@@ -1,12 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "bar",
-  "description": "Allows the Bar window to create or focus the settings window",
+  "description": "Default permissions for the taskbar Bar window",
   "windows": ["bar"],
-  "permissions": [
-    "core:default",
-    "core:webview:allow-create-webview-window",
-    "core:window:allow-show",
-    "core:window:allow-set-focus"
-  ]
+  "permissions": ["core:default"]
 }

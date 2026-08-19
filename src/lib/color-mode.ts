@@ -8,6 +8,11 @@ import {
   type SettingsPayload,
 } from '@/lib/settings-api'
 
+let resolveColorModeReady: (() => void) | undefined
+const colorModeReady = new Promise<void>((resolve) => {
+  resolveColorModeReady = resolve
+})
+
 /** 根据用户设置和系统偏好，给当前 WebView 的根节点应用深色类名。 */
 function applyColorMode(colorMode: ColorMode, systemColorMode: MediaQueryList): void {
   const useDark = colorMode === 'dark' || (colorMode === 'system' && systemColorMode.matches)
@@ -44,8 +49,16 @@ export async function startColorModeSync(): Promise<() => void> {
     // 设置通路暂时不可用时保留“跟随系统”，窗口仍可正常显示。
   }
 
+  resolveColorModeReady?.()
+  resolveColorModeReady = undefined
+
   return () => {
     stopSettingsListener?.()
     systemColorMode.removeEventListener('change', handleSystemColorModeChange)
   }
+}
+
+/** 等待当前 WebView 完成首次颜色模式应用。 */
+export function waitForColorModeReady(): Promise<void> {
+  return colorModeReady
 }

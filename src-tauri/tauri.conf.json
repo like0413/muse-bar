@@ -26,6 +26,18 @@
         "transparent": true,
         "shadow": false,
         "skipTaskbar": true
+      },
+      {
+        "label": "settings",
+        "create": false,
+        "title": "Muse Bar 设置",
+        "url": "index.html#/settings",
+        "width": 960,
+        "height": 680,
+        "minWidth": 720,
+        "minHeight": 520,
+        "center": true,
+        "visible": false
       }
     ],
     "security": {

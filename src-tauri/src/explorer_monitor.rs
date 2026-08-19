@@ -62,6 +62,18 @@ pub fn start(app: AppHandle) -> io::Result<()> {
     Ok(())
 }
 
+/// 请求恢复工作线程重新创建当前缺失的 Bar。
+pub(crate) fn request_recovery() -> Result<(), String> {
+    TASKBAR_CREATED_SENDER
+        .get()
+        .ok_or_else(|| "Explorer 恢复监听器尚未启动".to_owned())?
+        .try_send(())
+        .or_else(|error| match error {
+            mpsc::TrySendError::Full(_) => Ok(()),
+            mpsc::TrySendError::Disconnected(_) => Err("Explorer 恢复工作线程已经停止".to_owned()),
+        })
+}
+
 /// 等待 TaskbarCreated 信号并恢复 Bar。
 fn run_recovery_worker(app: AppHandle, receiver: Receiver<()>) {
     for () in receiver {
@@ -164,6 +176,13 @@ fn recover_bar_once(app: &AppHandle) -> Result<(), String> {
         bar_webview
             .set_auto_resize(true)
             .map_err(|error| format!("无法恢复 Bar WebView 自动尺寸同步：{error}"))?;
+    }
+
+    // 托盘的临时隐藏状态跨 Explorer 重建保留，避免重建流程意外把 Bar 显示出来。
+    if !app.state::<AppState>().is_bar_visible() {
+        bar_window
+            .hide()
+            .map_err(|error| format!("无法恢复 Bar 的临时隐藏状态：{error}"))?;
     }
 
     Ok(())

@@ -11,7 +11,7 @@ import {
   Settings2Icon,
 } from '@lucide/vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -42,6 +42,7 @@ import {
 import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { waitForColorModeReady } from '@/lib/color-mode'
 import {
   getCurrentMediaSnapshot,
   getMediaSessionActivities,
@@ -73,6 +74,7 @@ import {
   type SettingsPayload,
   type TaskbarPosition,
 } from '@/lib/settings-api'
+import { showReadySettingsWindow } from '@/lib/settings-window'
 import {
   getTaskbarDpi,
   getTaskbarIdentity,
@@ -222,6 +224,11 @@ function handleProgressStyleChange(progressStyle: unknown): void {
     void saveSettingsPatch({ progressStyle })
 }
 
+/** 保存开机启动开关，Rust 会同步 Windows 当前用户启动项。 */
+function handleLaunchOnStartupChange(enabled: boolean): void {
+  if (enabled !== launchOnStartup.value) void saveSettingsPatch({ launchOnStartup: enabled })
+}
+
 /** 提交最小宽度，并保证它不会超过当前最大宽度。 */
 function commitMinimumWidth(value: number[]): void {
   const width = value[0]
@@ -336,6 +343,45 @@ async function startMediaSessionActivityListener(): Promise<void> {
   }
 }
 
+/** 等待浏览器至少获得一次绘制机会，同时用短超时避免隐藏窗口中动画帧被暂停。 */
+function waitForInitialPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    let resolved = false
+    const finish = () => {
+      if (resolved) return
+      resolved = true
+      resolve()
+    }
+
+    window.requestAnimationFrame(() => window.requestAnimationFrame(finish))
+    window.setTimeout(finish, 50)
+  })
+}
+
+/** 完成设置页首次数据读取、主题应用和 DOM 绘制后再显示原生窗口。 */
+async function initializeSettingsPage(): Promise<void> {
+  await Promise.all([
+    loadRuntimeInfo(),
+    loadSettings(),
+    loadTaskbarDiagnostics(),
+    startMediaSnapshotListener(),
+    startMediaSessionIdentityListener(),
+    startMediaSessionActivityListener(),
+    waitForColorModeReady(),
+  ])
+  if (hasUnmounted) return
+
+  await nextTick()
+  await waitForInitialPaint()
+  if (hasUnmounted) return
+
+  try {
+    await showReadySettingsWindow()
+  } catch (error) {
+    console.error('设置页准备完成，但无法显示原生窗口：', error)
+  }
+}
+
 watch(
   settings,
   (value) => {
@@ -349,14 +395,7 @@ watch(
   { immediate: true },
 )
 
-onMounted(() => {
-  void loadRuntimeInfo()
-  void loadSettings()
-  void loadTaskbarDiagnostics()
-  void startMediaSnapshotListener()
-  void startMediaSessionIdentityListener()
-  void startMediaSessionActivityListener()
-})
+onMounted(() => void initializeSettingsPage())
 
 onBeforeUnmount(() => {
   hasUnmounted = true
@@ -561,7 +600,7 @@ onBeforeUnmount(() => {
               <CardTitle>进度样式</CardTitle>
               <CardDescription>两种样式都使用当前封面提取并增强后的主色。</CardDescription>
             </CardHeader>
-            <CardContent class="space-y-6">
+            <CardContent class="flex flex-col gap-6">
               <ToggleGroup
                 type="single"
                 variant="outline"
@@ -690,7 +729,7 @@ onBeforeUnmount(() => {
                 >共 {{ mediaSessionIdentities.length }} 个系统媒体会话。</CardDescription
               >
             </CardHeader>
-            <CardContent class="space-y-2">
+            <CardContent class="flex flex-col gap-2">
               <p v-if="mediaSessionIdentities.length === 0" class="text-muted-foreground text-sm">
                 暂无媒体会话。
               </p>
@@ -716,7 +755,7 @@ onBeforeUnmount(() => {
               <CardTitle>最近活动</CardTitle>
               <CardDescription>用于解释多个播放器同时存在时的选择顺序。</CardDescription>
             </CardHeader>
-            <CardContent class="space-y-2">
+            <CardContent class="flex flex-col gap-2">
               <p v-if="mediaSessionActivities.length === 0" class="text-muted-foreground text-sm">
                 暂无有效活动记录。
               </p>
@@ -749,7 +788,7 @@ onBeforeUnmount(() => {
           <Card>
             <CardHeader>
               <CardTitle>应用行为</CardTitle>
-              <CardDescription>后台生命周期功能将在阶段 11 接入。</CardDescription>
+              <CardDescription>控制 Muse Bar 的 Windows 启动和后台运行行为。</CardDescription>
             </CardHeader>
             <CardContent>
               <FieldGroup>
@@ -757,20 +796,24 @@ onBeforeUnmount(() => {
                   <FieldContent>
                     <FieldTitle>开机启动</FieldTitle>
                     <FieldDescription
-                      >当前设置为“{{ launchOnStartup ? '开启' : '关闭' }}”，启动项将在阶段 11.4
-                      实现。</FieldDescription
+                      >使用 Windows 当前用户启动项，不需要管理员权限。</FieldDescription
                     >
                   </FieldContent>
-                  <Switch :model-value="launchOnStartup" disabled aria-label="开机启动暂未启用" />
+                  <Switch
+                    :model-value="launchOnStartup"
+                    :disabled="isSavingSettings || !settings"
+                    aria-label="开机启动"
+                    @update:model-value="handleLaunchOnStartupChange"
+                  />
                 </Field>
                 <Field orientation="horizontal">
                   <FieldContent>
                     <FieldTitle>单实例与托盘</FieldTitle>
-                    <FieldDescription
-                      >托盘入口、单实例和关闭到托盘将在阶段 11 完成。</FieldDescription
-                    >
+                    <FieldDescription>
+                      重复启动会唤醒本窗口；关闭设置页后应用继续留在托盘。
+                    </FieldDescription>
                   </FieldContent>
-                  <Badge variant="secondary">下一阶段</Badge>
+                  <Badge variant="secondary">已启用</Badge>
                 </Field>
               </FieldGroup>
             </CardContent>
@@ -780,9 +823,10 @@ onBeforeUnmount(() => {
         <template v-else>
           <div class="flex justify-end gap-2">
             <Button variant="outline" size="sm" @click="loadTaskbarDiagnostics">
-              <RefreshCwIcon />刷新诊断 </Button
-            ><Button size="sm" @click="handleOpenLogDirectory">
-              <FolderOpenIcon />打开日志目录
+              <RefreshCwIcon data-icon="inline-start" />刷新诊断
+            </Button>
+            <Button size="sm" @click="handleOpenLogDirectory">
+              <FolderOpenIcon data-icon="inline-start" />打开日志目录
             </Button>
           </div>
           <Alert v-if="logDirectoryError" variant="destructive">
@@ -825,7 +869,7 @@ onBeforeUnmount(() => {
               <CardTitle>任务栏状态</CardTitle>
               <CardDescription>主任务栏身份、DPI 和原生控件测量结果。</CardDescription>
             </CardHeader>
-            <CardContent class="space-y-4">
+            <CardContent class="flex flex-col gap-4">
               <Alert v-if="taskbarDiagnosticError" variant="destructive">
                 <AlertCircleIcon />
                 <AlertTitle>任务栏诊断失败</AlertTitle>
@@ -887,7 +931,7 @@ onBeforeUnmount(() => {
               <p v-if="recentErrors.length === 0" class="text-muted-foreground text-sm">
                 当前没有记录到错误。
               </p>
-              <ul v-else class="space-y-2">
+              <ul v-else class="flex flex-col gap-2">
                 <li
                   v-for="error in recentErrors"
                   :key="error"
@@ -903,7 +947,7 @@ onBeforeUnmount(() => {
               <CardTitle>关于 Muse Bar</CardTitle>
               <CardDescription>Windows 11 任务栏系统媒体工具。</CardDescription>
             </CardHeader>
-            <CardContent class="text-muted-foreground space-y-2 text-sm">
+            <CardContent class="text-muted-foreground flex flex-col gap-2 text-sm">
               <p>当前版本聚焦主显示器、Child 真嵌入和 Windows SMTC 媒体会话。</p>
               <p>歌词、Owner 回退、多屏同步和自动更新不属于当前首版范围。</p>
             </CardContent>

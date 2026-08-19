@@ -1,5 +1,11 @@
 use tauri::Manager;
 
+/// 托盘、设置窗口与应用退出生命周期。
+mod app_lifecycle;
+
+/// Windows 当前用户开机启动项同步。
+mod autostart;
+
 /// 任务栏 Child 窗口的样式、挂载与位置维护。
 mod child_host;
 
@@ -36,8 +42,22 @@ mod taskbar_occupancy;
 /// 配置插件并启动整个应用共享的 Tauri 运行时。
 pub fn run() {
     let app = tauri::Builder::default()
+        // 单实例插件必须最先注册，确保第二个进程不会先创建托盘或后台监听器。
+        .plugin(tauri_plugin_single_instance::init(
+            |app, _arguments, _working_directory| {
+                if let Err(error) = app_lifecycle::open_settings_window(app) {
+                    log::error!("第二次启动时无法唤醒设置窗口：{error}");
+                }
+            },
+        ))
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .app_name("Muse Bar")
+                .build(),
+        )
         .setup(|app| {
             let settings = settings::AppSettings::load(app.handle())?;
+            let launch_on_startup = settings.launch_on_startup;
             app.manage(state::AppState::new(env!("CARGO_PKG_VERSION"), settings));
 
             #[cfg(debug_assertions)]
@@ -52,6 +72,12 @@ pub fn run() {
             // 媒体管理器初始化期间也可能发生 WinRT 错误，因此调试日志必须先就绪。
             app.manage(system_media::SystemMediaManager::initialize(app.handle()));
 
+            if let Err(error) = autostart::synchronize(app.handle(), launch_on_startup) {
+                log::error!("启动时无法同步开机启动设置：{error}");
+            }
+
+            app_lifecycle::create_tray(app)?;
+
             explorer_monitor::start(app.handle().clone())?;
 
             Ok(())
@@ -64,6 +90,8 @@ pub fn run() {
             commands::diagnostics::get_taskbar_rect,
             commands::diagnostics::get_windows_version,
             commands::diagnostics::open_log_directory,
+            commands::lifecycle::open_settings_window,
+            commands::lifecycle::show_ready_settings_window,
             commands::media::get_current_media_metadata,
             commands::media::get_current_media_snapshot,
             commands::media::get_current_playback_capabilities,
@@ -82,14 +110,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|_app, event| {
-        if let tauri::RunEvent::ExitRequested {
+    app.run(|_app, event| if let tauri::RunEvent::ExitRequested {
             code: None, api, ..
-        } = event
-        {
-            // Explorer 重启会销毁其所有 Child。阻止“最后一个窗口消失”触发自然退出，
-            // 让后台监听器有机会重建 Bar；带退出码的程序化退出仍会正常执行。
-            api.prevent_exit();
-        }
+        } = event {
+        // Explorer 重启会销毁其所有 Child。阻止“最后一个窗口消失”触发自然退出，
+        // 设置窗口可正常销毁；只有托盘“退出”的带退出码请求才真正结束进程。
+        api.prevent_exit();
     });
 }
