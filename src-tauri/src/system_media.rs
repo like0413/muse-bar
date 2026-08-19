@@ -25,6 +25,7 @@ use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTIT
 const TICKS_PER_MILLISECOND: i64 = 10_000;
 const WINDOWS_TO_UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
 const MEDIA_SESSIONS_CHANGED_EVENT: &str = "media-sessions-changed";
+const MEDIA_SESSION_IDENTITIES_CHANGED_EVENT: &str = "media-session-identities-changed";
 const CURRENT_MEDIA_METADATA_CHANGED_EVENT: &str = "current-media-metadata-changed";
 const CURRENT_PLAYBACK_STATUS_CHANGED_EVENT: &str = "current-playback-status-changed";
 const CURRENT_PLAYBACK_CAPABILITIES_CHANGED_EVENT: &str = "current-playback-capabilities-changed";
@@ -42,6 +43,29 @@ pub(crate) struct CurrentMediaMetadata {
     artist: String,
     artwork_data_url: Option<String>,
     accent_color: String,
+}
+
+/// Muse Bar 用于会话选择和诊断的播放器类别。
+#[derive(Debug, Clone, Copy, Serialize)]
+pub(crate) enum MediaPlayerKind {
+    #[serde(rename = "qqMusic")]
+    QqMusic,
+    #[serde(rename = "neteaseCloudMusic")]
+    NeteaseCloudMusic,
+    #[serde(rename = "kugouMusic")]
+    KugouMusic,
+    #[serde(rename = "qishuiMusic")]
+    QishuiMusic,
+    #[serde(rename = "other")]
+    Other,
+}
+
+/// 诊断页面使用的会话来源标识及其识别结果。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MediaSessionIdentity {
+    source_app_id: String,
+    player_kind: MediaPlayerKind,
 }
 
 /// 一次缩略图读取产生的前端图片和候选主色。
@@ -101,6 +125,7 @@ pub(crate) struct CurrentTimeline {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MediaSnapshot {
     source_app_id: String,
+    player_kind: MediaPlayerKind,
     title: String,
     artist: String,
     artwork_data_url: Option<String>,
@@ -327,6 +352,16 @@ impl SystemMediaManager {
         collect_source_app_ids(manager)
     }
 
+    /// 枚举全部媒体会话，并返回 Muse Bar 对每个来源的播放器分类。
+    pub(crate) fn session_identities(&self) -> Result<Vec<MediaSessionIdentity>, String> {
+        let manager = self
+            .manager
+            .as_ref()
+            .ok_or_else(|| "Windows 全局系统媒体管理器尚未初始化".to_owned())?;
+
+        collect_session_identities(manager)
+    }
+
     /// 从内存缓存读取标题、歌手和封面，不在 Tauri 命令线程中等待 WinRT。
     pub(crate) fn current_media_metadata(&self) -> Result<Option<CurrentMediaMetadata>, String> {
         self.media_metadata_loader.cached()
@@ -434,10 +469,18 @@ fn subscribe_to_sessions_changed<R: Runtime>(
                 return Ok(());
             };
 
-            match collect_source_app_ids(manager) {
-                Ok(source_app_ids) => {
+            match collect_session_identities(manager) {
+                Ok(identities) => {
+                    let source_app_ids = identities
+                        .iter()
+                        .map(|identity| identity.source_app_id.clone())
+                        .collect::<Vec<_>>();
                     if let Err(error) = app.emit(MEDIA_SESSIONS_CHANGED_EVENT, source_app_ids) {
                         log::warn!("无法广播系统媒体会话列表变化：{error}");
+                    }
+                    if let Err(error) = app.emit(MEDIA_SESSION_IDENTITIES_CHANGED_EVENT, identities)
+                    {
+                        log::warn!("无法广播媒体会话身份变化：{error}");
                     }
                 }
                 Err(error) => log::warn!("系统媒体会话列表变化后重新枚举失败：{error}"),
@@ -758,6 +801,7 @@ fn compose_media_snapshot(
     let timeline = read_timeline(session)?;
 
     Ok(MediaSnapshot {
+        player_kind: identify_media_player(&metadata.source_app_id),
         source_app_id: metadata.source_app_id,
         title: metadata.title,
         artist: metadata.artist,
@@ -1138,13 +1182,25 @@ fn ticks_to_milliseconds(ticks: i64) -> i64 {
 fn collect_source_app_ids(
     manager: &GlobalSystemMediaTransportControlsSessionManager,
 ) -> Result<Vec<String>, String> {
+    collect_session_identities(manager).map(|identities| {
+        identities
+            .into_iter()
+            .map(|identity| identity.source_app_id)
+            .collect()
+    })
+}
+
+/// 从指定管理器读取全部会话，并为每个 Source App ID 添加播放器类别。
+fn collect_session_identities(
+    manager: &GlobalSystemMediaTransportControlsSessionManager,
+) -> Result<Vec<MediaSessionIdentity>, String> {
     let sessions = manager
         .GetSessions()
         .map_err(|error| format!("无法枚举系统媒体会话：{error}"))?;
     let session_count = sessions
         .Size()
         .map_err(|error| format!("无法读取系统媒体会话数量：{error}"))?;
-    let mut source_app_ids = Vec::with_capacity(session_count as usize);
+    let mut identities = Vec::with_capacity(session_count as usize);
 
     for index in 0..session_count {
         let session = sessions
@@ -1153,8 +1209,33 @@ fn collect_source_app_ids(
         let source_app_id = session
             .SourceAppUserModelId()
             .map_err(|error| format!("无法读取第 {} 个会话的 Source App ID：{error}", index + 1))?;
-        source_app_ids.push(source_app_id.to_string());
+        let source_app_id = source_app_id.to_string();
+        identities.push(MediaSessionIdentity {
+            player_kind: identify_media_player(&source_app_id),
+            source_app_id,
+        });
     }
 
-    Ok(source_app_ids)
+    Ok(identities)
+}
+
+/// 根据 Source App ID 中稳定的品牌或可执行文件标识识别四个目标播放器。
+fn identify_media_player(source_app_id: &str) -> MediaPlayerKind {
+    let normalized = source_app_id.to_ascii_lowercase();
+
+    if normalized.contains("qqmusic") {
+        MediaPlayerKind::QqMusic
+    } else if normalized.contains("cloudmusic") || normalized.contains("netease") {
+        MediaPlayerKind::NeteaseCloudMusic
+    } else if normalized.contains("kugou") || normalized.contains("kgmusic") {
+        MediaPlayerKind::KugouMusic
+    } else if normalized == "汽水音乐"
+        || normalized.contains("qishui")
+        || normalized.contains("com.ss.android.ugc.luna")
+        || normalized.ends_with("luna.exe")
+    {
+        MediaPlayerKind::QishuiMusic
+    } else {
+        MediaPlayerKind::Other
+    }
 }

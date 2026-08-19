@@ -5,8 +5,12 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import {
   getCurrentMediaSnapshot,
+  getMediaSessionIdentities,
   listenToCurrentMediaSnapshotChanges,
   listenToCurrentTimelineChanges,
+  listenToMediaSessionIdentityChanges,
+  type MediaPlayerKind,
+  type MediaSessionIdentity,
   type MediaSnapshot,
 } from '@/lib/media-api'
 import { getRuntimeInfo } from '@/lib/runtime-info'
@@ -29,8 +33,10 @@ const settingsError = ref<string>()
 const isSavingSettings = ref(false)
 const mediaSnapshot = ref<MediaSnapshot | null>(null)
 const mediaSnapshotError = ref<string>()
+const mediaSessionIdentities = ref<MediaSessionIdentity[]>([])
 let stopMediaSnapshotListener: UnlistenFn | undefined
 let stopTimelineListener: UnlistenFn | undefined
+let stopMediaSessionIdentityListener: UnlistenFn | undefined
 let hasUnmounted = false
 
 const currentPosition = computed(() => readTaskbarPosition(settings.value))
@@ -48,6 +54,14 @@ const colorModeOptions: ReadonlyArray<{ value: ColorMode; label: string }> = [
   { value: 'dark', label: '深色' },
   { value: 'light', label: '浅色' },
 ]
+
+const playerKindLabels: Record<MediaPlayerKind, string> = {
+  qqMusic: 'QQ 音乐',
+  neteaseCloudMusic: '网易云音乐',
+  kugouMusic: '酷狗音乐',
+  qishuiMusic: '汽水音乐',
+  other: '普通系统媒体',
+}
 
 /** 序列化诊断快照，但不把可能很长的封面 base64 正文插入页面 DOM。 */
 function serializeMediaSnapshot(snapshot: MediaSnapshot | null): string {
@@ -156,16 +170,36 @@ async function startMediaSnapshotListener(): Promise<void> {
   }
 }
 
+/** 订阅会话列表变化，并读取首次打开设置页时已经存在的播放器身份。 */
+async function startMediaSessionIdentityListener(): Promise<void> {
+  try {
+    const stopListener = await listenToMediaSessionIdentityChanges((identities) => {
+      mediaSessionIdentities.value = identities
+    })
+    if (hasUnmounted) {
+      stopListener()
+      return
+    }
+
+    stopMediaSessionIdentityListener = stopListener
+    mediaSessionIdentities.value = await getMediaSessionIdentities()
+  } catch (error) {
+    mediaSnapshotError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
 onMounted(() => {
   void loadRuntimeInfo()
   void loadSettings()
   void startMediaSnapshotListener()
+  void startMediaSessionIdentityListener()
 })
 
 onBeforeUnmount(() => {
   hasUnmounted = true
   stopMediaSnapshotListener?.()
   stopTimelineListener?.()
+  stopMediaSessionIdentityListener?.()
 })
 </script>
 
@@ -243,6 +277,20 @@ onBeforeUnmount(() => {
         v-else
         class="bg-muted max-h-72 overflow-auto rounded-md border p-3 text-xs whitespace-pre-wrap"
         >{{ mediaSnapshotJson }}</pre>
+      <h3 class="mt-2 font-medium">检测到的媒体会话</h3>
+      <p v-if="mediaSessionIdentities.length === 0" class="text-muted-foreground text-sm">
+        当前没有媒体会话
+      </p>
+      <ul v-else class="flex flex-col gap-1 text-sm">
+        <li
+          v-for="(identity, index) in mediaSessionIdentities"
+          :key="`${identity.sourceAppId}-${index}`"
+          class="bg-muted rounded-md border px-3 py-2"
+        >
+          <span class="font-medium">{{ playerKindLabels[identity.playerKind] }}</span>
+          <code class="text-muted-foreground ml-2 break-all">{{ identity.sourceAppId }}</code>
+        </li>
+      </ul>
     </section>
   </main>
 </template>

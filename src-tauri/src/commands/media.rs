@@ -2,7 +2,7 @@ use tauri::State;
 
 use crate::system_media::{
     CurrentMediaMetadata, CurrentPlaybackCapabilities, CurrentPlaybackStatus, CurrentTimeline,
-    MediaSnapshot, SystemMediaManager,
+    MediaSessionIdentity, MediaSnapshot, SystemMediaManager,
 };
 
 /// 返回进程级 Windows 全局系统媒体管理器是否初始化成功。
@@ -17,6 +17,14 @@ pub fn get_media_session_source_app_ids(
     state: State<'_, SystemMediaManager>,
 ) -> Result<Vec<String>, String> {
     state.source_app_ids()
+}
+
+/// 返回全部媒体会话的原始来源标识和播放器分类。
+#[tauri::command]
+pub fn get_media_session_identities(
+    state: State<'_, SystemMediaManager>,
+) -> Result<Vec<MediaSessionIdentity>, String> {
+    state.session_identities()
 }
 
 /// 从后台缓存返回 Windows 当前媒体会话的标题、歌手和封面。

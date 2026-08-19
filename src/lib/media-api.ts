@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 const MEDIA_SESSIONS_CHANGED_EVENT = 'media-sessions-changed'
+const MEDIA_SESSION_IDENTITIES_CHANGED_EVENT = 'media-session-identities-changed'
 const CURRENT_MEDIA_METADATA_CHANGED_EVENT = 'current-media-metadata-changed'
 const CURRENT_PLAYBACK_STATUS_CHANGED_EVENT = 'current-playback-status-changed'
 const CURRENT_PLAYBACK_CAPABILITIES_CHANGED_EVENT = 'current-playback-capabilities-changed'
@@ -16,6 +17,18 @@ export type CurrentPlaybackStatus =
   | 'playing'
   | 'paused'
   | 'unknown'
+
+export type MediaPlayerKind =
+  | 'qqMusic'
+  | 'neteaseCloudMusic'
+  | 'kugouMusic'
+  | 'qishuiMusic'
+  | 'other'
+
+export interface MediaSessionIdentity {
+  sourceAppId: string
+  playerKind: MediaPlayerKind
+}
 
 export interface CurrentMediaMetadata {
   sourceAppId: string
@@ -45,6 +58,7 @@ export interface CurrentTimeline {
 
 export interface MediaSnapshot {
   sourceAppId: string
+  playerKind: MediaPlayerKind
   title: string
   artist: string
   artworkDataUrl: string | null
@@ -62,6 +76,20 @@ export function isSystemMediaManagerInitialized(): Promise<boolean> {
 /** 读取当前所有 Windows 系统媒体会话的 Source App ID。 */
 export function getMediaSessionSourceAppIds(): Promise<string[]> {
   return invoke<string[]>('get_media_session_source_app_ids')
+}
+
+/** 读取全部媒体会话的原始来源标识和 Muse Bar 播放器分类。 */
+export function getMediaSessionIdentities(): Promise<MediaSessionIdentity[]> {
+  return invoke<MediaSessionIdentity[]>('get_media_session_identities')
+}
+
+/** 订阅媒体会话身份变化，并返回用于取消订阅的函数。 */
+export function listenToMediaSessionIdentityChanges(
+  handleIdentities: (identities: MediaSessionIdentity[]) => void,
+): Promise<UnlistenFn> {
+  return listen<MediaSessionIdentity[]>(MEDIA_SESSION_IDENTITIES_CHANGED_EVENT, (event) => {
+    handleIdentities(event.payload)
+  })
 }
 
 /** 订阅系统媒体会话列表变化，并返回用于取消订阅的函数。 */

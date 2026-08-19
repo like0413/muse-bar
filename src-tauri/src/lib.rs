@@ -57,6 +57,7 @@ pub fn run() {
             commands::media::get_current_playback_status,
             commands::media::get_current_timeline,
             commands::media::get_media_session_source_app_ids,
+            commands::media::get_media_session_identities,
             commands::media::is_system_media_manager_initialized,
             commands::runtime::get_runtime_info,
             commands::settings::get_settings,
