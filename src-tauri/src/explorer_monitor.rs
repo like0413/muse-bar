@@ -2,17 +2,20 @@ use std::{
     io,
     sync::{
         atomic::{AtomicU32, Ordering},
-        mpsc::{self, Receiver, Sender},
+        mpsc::{self, Receiver, SyncSender},
         OnceLock,
     },
     thread,
     time::Duration,
 };
 
-use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{
+    webview::WebviewBuilder, window::WindowBuilder, AppHandle, Manager, PhysicalPosition,
+    PhysicalSize,
+};
 
 use crate::{
+    child_host,
     platform::windows::{
         w, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetModuleHandleW,
         PostQuitMessage, RegisterClassW, RegisterWindowMessageW, TranslateMessage, HINSTANCE, HWND,
@@ -21,26 +24,20 @@ use crate::{
     taskbar,
 };
 
-const TASKBAR_CREATED_EVENT: &str = "taskbar-created";
 const RECOVERY_ATTEMPTS: usize = 30;
 const RECOVERY_INTERVAL: Duration = Duration::from_millis(100);
+const BAR_WINDOW_LABEL: &str = "bar";
 
 static TASKBAR_CREATED_MESSAGE: AtomicU32 = AtomicU32::new(0);
-static TASKBAR_CREATED_SENDER: OnceLock<Sender<()>> = OnceLock::new();
-
-/// Explorer 重建任务栏后向所有前端窗口广播的新身份。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TaskbarCreatedEvent {
-    hwnd: u64,
-    explorer_process_id: u32,
-}
+static TASKBAR_CREATED_SENDER: OnceLock<SyncSender<()>> = OnceLock::new();
 
 /// 启动 Win32 消息线程和任务栏恢复工作线程。
 pub fn start(app: AppHandle) -> io::Result<()> {
-    let (sender, receiver) = mpsc::channel();
+    // Explorer 在短时间内重复广播时，只保留一个待处理的恢复任务。
+    // 容量为 1 的同步通道既能合并重复通知，也能防止任务无限积压。
+    let (sender, receiver) = mpsc::sync_channel(1);
     TASKBAR_CREATED_SENDER
-        .set(sender)
+        .set(sender.clone())
         .map_err(|_| io::Error::new(io::ErrorKind::AlreadyExists, "Explorer 监听器已经启动"))?;
 
     thread::Builder::new()
@@ -55,35 +52,31 @@ pub fn start(app: AppHandle) -> io::Result<()> {
             }
         })?;
 
+    // 配置中的 Bar 只作为窗口模板。通过同一条恢复通道进行首次创建，可以保证
+    // 原生宿主先挂到任务栏，再创建真正的 Child WebView。
+    sender
+        .try_send(())
+        .map_err(|_| io::Error::other("无法提交 Bar 首次创建任务"))?;
+
     Ok(())
 }
 
-/// 等待 TaskbarCreated 信号，并在 Explorer 就绪后广播新任务栏身份。
+/// 等待 TaskbarCreated 信号并恢复 Bar。
 fn run_recovery_worker(app: AppHandle, receiver: Receiver<()>) {
     for () in receiver {
-        match wait_for_recreated_taskbar() {
-            Ok(taskbar) => {
-                let event = TaskbarCreatedEvent {
-                    hwnd: taskbar.handle_value(),
-                    explorer_process_id: taskbar.explorer_process_id(),
-                };
-
-                if let Err(error) = app.emit(TASKBAR_CREATED_EVENT, event) {
-                    log::error!("无法广播任务栏重建事件：{error}");
-                }
-            }
-            Err(error) => log::error!("Explorer 重启后无法恢复任务栏身份：{error}"),
+        if let Err(error) = wait_for_bar_recovery(&app) {
+            log::error!("Explorer 重启后无法恢复 Bar：{error}");
         }
     }
 }
 
-/// 在 Explorer 广播后短暂重试，等待新的 Shell_TrayWnd 完成创建。
-fn wait_for_recreated_taskbar() -> Result<taskbar::TaskbarIdentity, String> {
-    let mut last_error = "尚未尝试查找任务栏".to_owned();
+/// 重试完整恢复流程，等待任务栏、Tauri 窗口注册表和 WebView2 都进入可用状态。
+fn wait_for_bar_recovery(app: &AppHandle) -> Result<(), String> {
+    let mut last_error = "尚未尝试恢复 Bar".to_owned();
 
     for attempt in 0..RECOVERY_ATTEMPTS {
-        match taskbar::find_main_taskbar() {
-            Ok(taskbar) => return Ok(taskbar),
+        match recover_bar_once(app) {
+            Ok(()) => return Ok(()),
             Err(error) => last_error = error,
         }
 
@@ -93,6 +86,75 @@ fn wait_for_recreated_taskbar() -> Result<taskbar::TaskbarIdentity, String> {
     }
 
     Err(last_error)
+}
+
+/// 执行一次 Bar 恢复：先创建并挂载原生宿主，再在宿主内创建 Child WebView。
+///
+/// Tauri 的 Windows 实现要求从非主线程调用窗口与 WebView 创建接口；接口内部会把
+/// 真正的创建工作派发到事件循环，避免 WebView2 同步初始化造成主线程死锁。
+fn recover_bar_once(app: &AppHandle) -> Result<(), String> {
+    let taskbar = taskbar::find_main_taskbar()?;
+    let taskbar_rect = taskbar::read_taskbar_rect(&taskbar)?;
+
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|config| config.label == BAR_WINDOW_LABEL)
+        .ok_or_else(|| "配置中缺少 Bar 窗口".to_owned())?;
+
+    let (bar_window, bar_recreated) = match app.get_window(BAR_WINDOW_LABEL) {
+        Some(window) if child_host::is_window_alive(&window) => (window, false),
+        Some(window) => {
+            // Explorer 会销毁其 Child。Tauri 的窗口注册表可能稍晚一拍才移除旧标签，
+            // 因此先请求清理并让外层重试，避免用同一标签创建出重复窗口。
+            let _ = window.destroy();
+            return Err("旧 Bar 已失效，正在等待 Tauri 清理窗口标签".to_owned());
+        }
+        None => {
+            // Explorer 销毁原生 Child 后，旧 WebView 标签可能比窗口标签更晚移除。
+            // 先关闭残留项并等待下一次重试，避免创建同名 WebView 失败。
+            if let Some(webview) = app.get_webview(BAR_WINDOW_LABEL) {
+                let _ = webview.close();
+                return Err("旧 Bar WebView 尚未清理，正在等待标签释放".to_owned());
+            }
+
+            let window = WindowBuilder::from_config(app, config)
+                .map_err(|error| format!("无法读取 Bar 窗口配置：{error}"))?
+                .build()
+                .map_err(|error| format!("无法创建 Bar 原生宿主：{error}"))?;
+            (window, true)
+        }
+    };
+
+    let recovery_result = (|| {
+        child_host::prepare_window(&bar_window)?;
+        child_host::attach_to_taskbar(&bar_window, &taskbar, &taskbar_rect)
+    })();
+
+    let attachment = match recovery_result {
+        Ok(attachment) => attachment,
+        Err(error) => {
+            if bar_recreated {
+                let _ = bar_window.destroy();
+            }
+            return Err(error);
+        }
+    };
+
+    if bar_recreated {
+        let webview_builder = WebviewBuilder::from_config(config);
+        let webview_size = PhysicalSize::new(attachment.width as u32, attachment.height as u32);
+        if let Err(error) =
+            bar_window.add_child(webview_builder, PhysicalPosition::new(0, 0), webview_size)
+        {
+            let _ = bar_window.destroy();
+            return Err(format!("无法在 Bar 宿主内创建 Child WebView：{error}"));
+        }
+    }
+
+    Ok(())
 }
 
 /// 创建不可见的顶层窗口并运行接收系统广播所需的消息循环。
@@ -165,7 +227,9 @@ unsafe extern "system" fn message_window_proc(
     let taskbar_created_message = TASKBAR_CREATED_MESSAGE.load(Ordering::Acquire);
     if taskbar_created_message != 0 && message == taskbar_created_message {
         if let Some(sender) = TASKBAR_CREATED_SENDER.get() {
-            let _ = sender.send(());
+            // 窗口过程必须尽快返回，不能等待正在运行的恢复任务。
+            // 队列已满表示已有一次恢复等待执行，此时无需重复提交。
+            let _ = sender.try_send(());
         }
         return LRESULT(0);
     }

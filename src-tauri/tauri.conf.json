@@ -13,11 +13,11 @@
     "windows": [
       {
         "label": "bar",
+        "create": false,
         "title": "Muse Bar",
         "url": "index.html#/bar",
         "width": 360,
         "height": 48,
-        "center": true,
         "resizable": false,
         "maximizable": false,
         "minimizable": false,

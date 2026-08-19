@@ -3,7 +3,7 @@ pub use ::windows::core::{w, PWSTR};
 
 /// 原生句柄、窗口句柄与矩形类型，以及句柄释放函数。
 pub use ::windows::Win32::Foundation::{
-    CloseHandle, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+    CloseHandle, COLORREF, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 
 /// 将屏幕坐标转换为指定窗口客户区坐标。
@@ -14,7 +14,8 @@ pub use ::windows::Win32::System::LibraryLoader::GetModuleHandleW;
 
 /// 查询进程可执行文件所需的最小权限、格式和 API。
 pub use ::windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
 /// 按指定窗口读取 DPI，避免错误使用全局系统 DPI。
@@ -23,9 +24,10 @@ pub use ::windows::Win32::UI::HiDpi::GetDpiForWindow;
 /// 后续挂载任务栏窗口需要读取和修改的窗口样式 API。
 pub use ::windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetMessageW, GetParent,
-    GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, PostQuitMessage, RegisterClassW,
-    RegisterWindowMessageW, SetParent, SetWindowLongPtrW, SetWindowPos, TranslateMessage,
-    GWL_EXSTYLE, GWL_STYLE, MSG, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN,
-    WS_CLIPSIBLINGS, WS_POPUP,
+    GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsWindow, PostQuitMessage,
+    RegisterClassW, RegisterWindowMessageW, SetLayeredWindowAttributes, SetParent,
+    SetWindowLongPtrW, SetWindowPos, TranslateMessage, GWL_EXSTYLE, GWL_STYLE, HWND_TOP, LWA_ALPHA,
+    MSG, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_SHOWWINDOW, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_DESTROY, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TRANSPARENT, WS_POPUP,
 };

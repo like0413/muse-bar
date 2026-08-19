@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     fs::{self, File},
-    io::ErrorKind,
+    io::{self, ErrorKind, Write},
     path::{Path, PathBuf},
     process,
     time::{SystemTime, UNIX_EPOCH},
@@ -92,18 +92,18 @@ impl AppSettings {
     /// 将设置完整写入临时文件，再用它替换正式设置文件。
     pub fn save<R: Runtime>(&self, app: &AppHandle<R>) -> Result<(), Box<dyn Error>> {
         let settings_path = settings_file_path(app)?;
-        let config_directory = settings_path.parent().ok_or_else(|| {
-            std::io::Error::new(ErrorKind::InvalidInput, "无法确定设置文件所在目录")
-        })?;
+        let config_directory = settings_path
+            .parent()
+            .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "无法确定设置文件所在目录"))?;
         fs::create_dir_all(config_directory)?;
 
+        // 先在内存中完成序列化，避免序列化失败时留下不完整的临时文件。
+        let serialized_settings = serde_json::to_vec_pretty(self)?;
         let temporary_path = temporary_settings_path(config_directory);
-        let mut temporary_file = File::create(&temporary_path)?;
-        serde_json::to_writer_pretty(&mut temporary_file, self)?;
-        temporary_file.sync_all()?;
+        write_temporary_settings(&temporary_path, &serialized_settings)?;
 
         if let Err(error) = fs::rename(&temporary_path, &settings_path) {
-            let _ = fs::remove_file(temporary_path);
+            let _ = fs::remove_file(&temporary_path);
             return Err(error.into());
         }
 
@@ -119,6 +119,22 @@ fn settings_file_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, tauri::
 /// 为本次进程生成与正式文件同目录的临时设置文件路径。
 fn temporary_settings_path(config_directory: &Path) -> PathBuf {
     config_directory.join(format!("settings.{}.tmp", process::id()))
+}
+
+/// 写入并同步临时设置文件；失败时清理可能存在的不完整文件。
+fn write_temporary_settings(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let write_result = (|| {
+        let mut file = File::create(path)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(path);
+    }
+
+    write_result
 }
 
 /// 尝试为损坏的设置文件生成不会覆盖正常配置的备份名称。

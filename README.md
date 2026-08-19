@@ -4,8 +4,10 @@ Muse Bar 是一个面向 Windows 11 的任务栏媒体控制工具。首版会�
 系统媒体会话显示封面、歌曲名、歌手、播放状态和进度，并提供上一曲、下一曲、
 播放/暂停与可用时的进度跳转。
 
-当前仓库处于“阶段 0：开发基线”。任务栏嵌入和媒体功能会按照
-[架构与数据流](docs/architecture.md) 中的边界逐步加入。
+当前仓库已完成 Child 任务栏嵌入的技术闸门验证；透明渲染、鼠标交互、任务栏自动隐藏、
+全屏行为和 Explorer 重启恢复均已通过。首版采用 Child 作为默认宿主，并保留 Owner
+兼容回退。后续任务栏宿主和媒体功能会按照[架构与数据流](docs/architecture.md) 中的边界
+逐步加入。
 
 ## 环境要求
 
@@ -54,6 +56,7 @@ vp exec tauri build
 
 - [架构、目录与数据流](docs/architecture.md)
 - [原始模板验证记录](docs/baseline.md)
+- [Child 任务栏宿主技术闸门](docs/child-host-validation.md)
 
 ## 分步开发约定
 

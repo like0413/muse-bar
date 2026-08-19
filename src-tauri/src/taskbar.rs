@@ -23,8 +23,6 @@ pub struct TaskbarRect {
     top: i32,
     right: i32,
     bottom: i32,
-    width: i32,
-    height: i32,
 }
 
 /// 任务栏窗口自身的 DPI 与对应缩放因子。
@@ -74,12 +72,13 @@ impl TaskbarRect {
 
     /// 返回任务栏的物理像素宽度。
     pub fn width(&self) -> i32 {
-        self.width
+        // 矩形只在构造时验证一次，之后由边界即时计算尺寸，避免保存两份可能不一致的数据。
+        self.right - self.left
     }
 
     /// 返回任务栏的物理像素高度。
     pub fn height(&self) -> i32 {
-        self.height
+        self.bottom - self.top
     }
 }
 
@@ -161,8 +160,6 @@ pub fn read_taskbar_rect(taskbar: &TaskbarIdentity) -> Result<TaskbarRect, Strin
         top: native_rect.top,
         right: native_rect.right,
         bottom: native_rect.bottom,
-        width,
-        height,
     })
 }
 
