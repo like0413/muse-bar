@@ -30,6 +30,9 @@ mod state;
 /// Windows 任务栏的发现与运行时信息。
 mod taskbar;
 
+/// Windows 11 任务栏原生控件占用区域的读取与回退。
+mod taskbar_occupancy;
+
 /// 配置插件并启动整个应用共享的 Tauri 运行时。
 pub fn run() {
     let app = tauri::Builder::default()
@@ -57,6 +60,7 @@ pub fn run() {
             commands::bar_layout::report_bar_content_width,
             commands::diagnostics::get_taskbar_dpi,
             commands::diagnostics::get_taskbar_identity,
+            commands::diagnostics::get_taskbar_occupied_regions,
             commands::diagnostics::get_taskbar_rect,
             commands::media::get_current_media_metadata,
             commands::media::get_current_media_snapshot,

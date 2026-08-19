@@ -23,11 +23,14 @@ import { getRuntimeInfo } from '@/lib/runtime-info'
 import {
   getSettings,
   readColorMode,
+  readProgressStyle,
   readTaskbarPosition,
   updateSettings,
   type ColorMode,
+  type ProgressStyle,
   type SettingsPayload,
 } from '@/lib/settings-api'
+import { getTaskbarOccupiedRegions, type TaskbarOccupancy } from '@/lib/taskbar-diagnostics-api'
 import { readCurrentWindowLabel } from '@/lib/window-label'
 import type { RuntimeInfo } from '@/types/runtime-info'
 
@@ -37,6 +40,8 @@ const runtimeError = ref<string>()
 const settings = ref<SettingsPayload>()
 const settingsError = ref<string>()
 const isSavingSettings = ref(false)
+const taskbarOccupancy = ref<TaskbarOccupancy>()
+const taskbarOccupancyError = ref<string>()
 const mediaSnapshot = ref<MediaSnapshot | null>(null)
 const mediaSnapshotError = ref<string>()
 const mediaSessionIdentities = ref<MediaSessionIdentity[]>([])
@@ -53,6 +58,7 @@ let hasUnmounted = false
 
 const currentPosition = computed(() => readTaskbarPosition(settings.value))
 const currentColorMode = computed(() => readColorMode(settings.value))
+const currentProgressStyle = computed(() => readProgressStyle(settings.value))
 const mediaSnapshotJson = computed(() => serializeMediaSnapshot(mediaSnapshot.value))
 const seekMinimum = computed(() => mediaSnapshot.value?.timeline?.minSeekMs ?? 0)
 const seekMaximum = computed(() => {
@@ -76,6 +82,11 @@ const colorModeOptions: ReadonlyArray<{ value: ColorMode; label: string }> = [
   { value: 'light', label: '浅色' },
 ]
 
+const progressStyleOptions: ReadonlyArray<{ value: ProgressStyle; label: string }> = [
+  { value: 'underline', label: '底部细线' },
+  { value: 'background-gradient', label: '背景渐变' },
+]
+
 const playerKindLabels: Record<MediaPlayerKind, string> = {
   qqMusic: 'QQ 音乐',
   neteaseCloudMusic: '网易云音乐',
@@ -90,6 +101,11 @@ const activityReasonLabels: Record<MediaActivityReason, string> = {
   trackChanged: '切歌',
   becameCurrent: '成为系统当前会话',
 }
+
+const taskbarOccupancySourceLabels = {
+  uiAutomation: 'UI Automation',
+  win32Fallback: 'Win32 子窗口回退',
+} as const
 
 /** 序列化诊断快照，但不把可能很长的封面 base64 正文插入页面 DOM。 */
 function serializeMediaSnapshot(snapshot: MediaSnapshot | null): string {
@@ -165,6 +181,16 @@ async function loadSettings(): Promise<void> {
   }
 }
 
+/** 读取任务栏原生控件占用矩形，供 9.4 在设置页直接验证。 */
+async function loadTaskbarOccupancy(): Promise<void> {
+  try {
+    taskbarOccupancy.value = await getTaskbarOccupiedRegions()
+    taskbarOccupancyError.value = undefined
+  } catch (error) {
+    taskbarOccupancyError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
 /** 只替换位置字段，并将其余设置原样交还 Rust 保存。 */
 async function handlePositionChange(position: unknown): Promise<void> {
   if (
@@ -202,6 +228,28 @@ async function handleColorModeChange(colorMode: unknown): Promise<void> {
 
   try {
     settings.value = await updateSettings({ ...settings.value, colorMode })
+  } catch (error) {
+    settingsError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    isSavingSettings.value = false
+  }
+}
+
+/** 只替换进度样式字段，保存后由设置事件实时更新 Bar。 */
+async function handleProgressStyleChange(progressStyle: unknown): Promise<void> {
+  if (
+    !settings.value ||
+    typeof progressStyle !== 'string' ||
+    !progressStyle ||
+    progressStyle === currentProgressStyle.value
+  )
+    return
+
+  isSavingSettings.value = true
+  settingsError.value = undefined
+
+  try {
+    settings.value = await updateSettings({ ...settings.value, progressStyle })
   } catch (error) {
     settingsError.value = error instanceof Error ? error.message : String(error)
   } finally {
@@ -277,6 +325,7 @@ async function startMediaSessionActivityListener(): Promise<void> {
 onMounted(() => {
   void loadRuntimeInfo()
   void loadSettings()
+  void loadTaskbarOccupancy()
   void startMediaSnapshotListener()
   void startMediaSessionIdentityListener()
   void startMediaSessionActivityListener()
@@ -363,6 +412,76 @@ onBeforeUnmount(() => {
         </ToggleGroupItem>
       </ToggleGroup>
       <p class="text-muted-foreground text-sm">当前值：{{ currentColorMode }}</p>
+    </section>
+    <section aria-labelledby="progress-style-heading" class="mt-4 flex flex-col gap-2">
+      <h2 id="progress-style-heading" class="text-lg font-medium">进度样式</h2>
+      <ToggleGroup
+        type="single"
+        variant="outline"
+        :disabled="isSavingSettings || !settings"
+        :model-value="currentProgressStyle"
+        @update:model-value="handleProgressStyleChange"
+      >
+        <ToggleGroupItem
+          v-for="option in progressStyleOptions"
+          :key="option.value"
+          :value="option.value"
+          :aria-label="option.label"
+        >
+          {{ option.label }}
+        </ToggleGroupItem>
+      </ToggleGroup>
+      <p class="text-muted-foreground text-sm">
+        背景渐变只覆盖已播放部分，并从左侧向当前位置逐渐增强。
+      </p>
+    </section>
+    <section aria-labelledby="taskbar-occupancy-heading" class="mt-4 flex flex-col gap-2">
+      <div class="flex items-center justify-between gap-3">
+        <h2 id="taskbar-occupancy-heading" class="text-lg font-medium">任务栏占用区域</h2>
+        <button
+          type="button"
+          class="text-muted-foreground hover:text-foreground text-sm underline-offset-4 hover:underline"
+          @click="loadTaskbarOccupancy"
+        >
+          重新读取
+        </button>
+      </div>
+      <p v-if="taskbarOccupancyError" role="alert" class="text-destructive text-sm">
+        {{ taskbarOccupancyError }}
+      </p>
+      <template v-else-if="taskbarOccupancy">
+        <p class="text-muted-foreground text-sm">
+          来源：{{ taskbarOccupancySourceLabels[taskbarOccupancy.source] }}；检测到
+          {{ taskbarOccupancy.regions.length }} 个区域
+        </p>
+        <p
+          v-if="taskbarOccupancy.fallbackReason"
+          class="text-muted-foreground rounded-md border px-3 py-2 text-sm"
+        >
+          回退原因：{{ taskbarOccupancy.fallbackReason }}
+        </p>
+        <p v-if="taskbarOccupancy.regions.length === 0" class="text-muted-foreground text-sm">
+          当前没有读取到可用的任务栏控件矩形。
+        </p>
+        <ul v-else class="flex max-h-72 flex-col gap-1 overflow-auto text-sm">
+          <li
+            v-for="(region, index) in taskbarOccupancy.regions"
+            :key="`${region.left}-${region.right}-${region.top}-${region.bottom}-${index}`"
+            class="bg-muted grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 rounded-md border px-3 py-2"
+          >
+            <span class="truncate" :title="region.name || region.className">
+              {{ region.name || region.className || '未命名控件' }}
+            </span>
+            <code class="text-muted-foreground">
+              {{ region.left }},{{ region.top }} → {{ region.right }},{{ region.bottom }}
+            </code>
+            <code class="text-muted-foreground col-span-2 truncate" :title="region.className">
+              {{ region.className || '无类名' }} · {{ region.width }}×{{ region.height }}
+            </code>
+          </li>
+        </ul>
+      </template>
+      <p v-else class="text-muted-foreground text-sm">正在读取任务栏控件…</p>
     </section>
     <section aria-labelledby="media-snapshot-heading" class="mt-4 flex flex-col gap-2">
       <h2 id="media-snapshot-heading" class="text-lg font-medium">MediaSnapshot</h2>

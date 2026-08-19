@@ -42,6 +42,29 @@ pub struct TaskbarDpiDiagnostic {
     logical_rect: LogicalTaskbarRectDiagnostic,
 }
 
+/// 一个任务栏原生控件的诊断矩形与可访问性身份。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskbarOccupiedRegionDiagnostic {
+    name: String,
+    class_name: String,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    width: i32,
+    height: i32,
+}
+
+/// 任务栏占用区域的检测来源、回退原因和完整区域列表。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskbarOccupancyDiagnostic {
+    source: String,
+    fallback_reason: Option<String>,
+    regions: Vec<TaskbarOccupiedRegionDiagnostic>,
+}
+
 impl TaskbarRectDiagnostic {
     /// 将任务栏领域矩形转换为前端诊断数据。
     fn from_taskbar_rect(rect: &crate::taskbar::TaskbarRect) -> Self {
@@ -69,6 +92,23 @@ impl LogicalTaskbarRectDiagnostic {
             bottom: dpi.physical_to_logical(rect.bottom()),
             width: dpi.physical_to_logical(rect.width()),
             height: dpi.physical_to_logical(rect.height()),
+        }
+    }
+}
+
+impl TaskbarOccupiedRegionDiagnostic {
+    /// 将任务栏占用领域对象转换为前端可直接检查的物理像素数据。
+    fn from_occupied_region(region: &crate::taskbar_occupancy::OccupiedRegion) -> Self {
+        let rect = region.rect();
+        Self {
+            name: region.name().to_owned(),
+            class_name: region.class_name().to_owned(),
+            left: rect.left(),
+            top: rect.top(),
+            right: rect.right(),
+            bottom: rect.bottom(),
+            width: rect.width(),
+            height: rect.height(),
         }
     }
 }
@@ -106,4 +146,26 @@ pub fn get_taskbar_dpi() -> Result<TaskbarDpiDiagnostic, String> {
         physical_rect: TaskbarRectDiagnostic::from_taskbar_rect(&physical_rect),
         logical_rect: LogicalTaskbarRectDiagnostic::from_physical_rect(&physical_rect, &dpi),
     })
+}
+
+/// 返回任务栏框架、任务按钮和系统托盘等原生控件的屏幕占用矩形。
+#[tauri::command]
+pub async fn get_taskbar_occupied_regions() -> Result<TaskbarOccupancyDiagnostic, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let taskbar = crate::taskbar::find_main_taskbar()?;
+        let taskbar_rect = crate::taskbar::read_taskbar_rect(&taskbar)?;
+        let occupancy = crate::taskbar_occupancy::read_occupied_regions(&taskbar, &taskbar_rect);
+
+        Ok(TaskbarOccupancyDiagnostic {
+            source: occupancy.source().as_str().to_owned(),
+            fallback_reason: occupancy.fallback_reason().map(str::to_owned),
+            regions: occupancy
+                .regions()
+                .iter()
+                .map(TaskbarOccupiedRegionDiagnostic::from_occupied_region)
+                .collect(),
+        })
+    })
+    .await
+    .map_err(|error| format!("任务栏占用区域后台任务意外终止：{error}"))?
 }

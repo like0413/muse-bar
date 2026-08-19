@@ -18,6 +18,7 @@ use crate::platform::windows::{
 };
 
 use crate::taskbar::{TaskbarIdentity, TaskbarRect};
+use crate::{settings::TaskbarPosition, taskbar_occupancy};
 
 const STABILIZATION_DELAYS: [Duration; 3] = [
     Duration::from_millis(100),
@@ -51,19 +52,21 @@ pub(crate) fn is_window_alive<R: Runtime>(bar_window: &Window<R>) -> bool {
 
 /// 将 Tauri 窗口转换为正式 Child 宿主并挂载到目标任务栏矩形。
 ///
-/// 调用方只需要提供经过验证的任务栏身份和矩形；窗口样式、分层属性、父子关系、
-/// 坐标转换和短期位置稳定化全部由本模块维护。
+/// 调用方只需要提供经过验证的任务栏身份、矩形和目标位置；窗口样式、分层属性、
+/// 父子关系、坐标转换和短期位置稳定化全部由本模块维护。
 pub(crate) fn attach_window<R: Runtime>(
     bar_window: &Window<R>,
     taskbar: &TaskbarIdentity,
     taskbar_rect: &TaskbarRect,
+    position: TaskbarPosition,
 ) -> Result<ChildHostSize, String> {
     let bar_handle = bar_window
         .hwnd()
         .map_err(|error| format!("无法取得 Bar 窗口句柄：{error}"))?;
 
     prepare_window(bar_handle)?;
-    let (width, height) = attach_to_taskbar(bar_window, bar_handle, taskbar, taskbar_rect)?;
+    let (width, height) =
+        attach_to_taskbar(bar_window, bar_handle, taskbar, taskbar_rect, position)?;
 
     Ok(ChildHostSize {
         width: u32::try_from(width).map_err(|_| "Bar 宽度无法转换为物理像素".to_owned())?,
@@ -71,10 +74,13 @@ pub(crate) fn attach_window<R: Runtime>(
     })
 }
 
-/// 在保持 Child 当前中心点和高度的前提下平滑调整原生宿主宽度。
+/// 在保持 Child 高度不变的前提下，平滑调整原生宿主宽度与目标横坐标。
 /// Child WebView 已启用自动尺寸同步，无需在动画中重复发送尺寸消息。
 pub(crate) fn animate_window_width<R: Runtime>(
     bar_window: Window<R>,
+    taskbar: &TaskbarIdentity,
+    taskbar_rect: &TaskbarRect,
+    position: TaskbarPosition,
     target_width: i32,
     animation_revision: u64,
     latest_animation_revision: Arc<AtomicU64>,
@@ -110,10 +116,20 @@ pub(crate) fn animate_window_width<R: Runtime>(
     if !unsafe { ScreenToClient(taskbar_handle, &mut client_position) }.as_bool() {
         return Err("无法将 Bar 当前位置转换为任务栏客户区坐标".to_owned());
     }
-    let center_x = client_position
-        .x
-        .checked_add(start_width / 2)
-        .ok_or_else(|| "Bar 中心横坐标超出可表示范围".to_owned())?;
+    let occupied_regions = taskbar_occupancy::read_positioning_regions(taskbar, taskbar_rect);
+    let target_screen_x = taskbar_occupancy::resolve_bar_screen_x(
+        position,
+        taskbar_rect,
+        &occupied_regions,
+        target_width,
+    );
+    let mut target_client_position = POINT {
+        x: target_screen_x,
+        y: taskbar_rect.top(),
+    };
+    if !unsafe { ScreenToClient(taskbar.handle(), &mut target_client_position) }.as_bool() {
+        return Err("无法将 Bar 目标位置转换为任务栏客户区坐标".to_owned());
+    }
     let bar_handle_value = bar_handle.0 as usize;
     let taskbar_handle_value = taskbar_handle.0 as usize;
 
@@ -130,7 +146,8 @@ pub(crate) fn animate_window_width<R: Runtime>(
                 let eased_progress = 1.0 - (1.0 - progress).powi(3);
                 let width_delta = f64::from(target_width - start_width) * eased_progress;
                 let width = start_width + width_delta.round() as i32;
-                let x = center_x - width / 2;
+                let x_delta = f64::from(target_client_position.x - client_position.x);
+                let x = client_position.x + (x_delta * eased_progress).round() as i32;
                 let scheduled_revision = Arc::clone(&latest_animation_revision);
                 let scheduled = bar_window.run_on_main_thread(move || {
                     if scheduled_revision.load(Ordering::Acquire) != animation_revision {
@@ -205,12 +222,13 @@ fn prepare_window(handle: HWND) -> Result<(), String> {
     Ok(())
 }
 
-/// 将准备完成的 Bar 挂载到任务栏，并在任务栏客户区中居中放置。
+/// 将准备完成的 Bar 挂载到任务栏，并按当前设置放入任务栏客户区。
 fn attach_to_taskbar<R: Runtime>(
     bar_window: &Window<R>,
     bar_handle: HWND,
     taskbar: &TaskbarIdentity,
     taskbar_rect: &TaskbarRect,
+    position: TaskbarPosition,
 ) -> Result<(i32, i32), String> {
     let (bar_width, bar_height) = read_window_size(bar_handle)?;
 
@@ -222,10 +240,13 @@ fn attach_to_taskbar<R: Runtime>(
         ));
     }
 
-    let screen_x = taskbar_rect
-        .left()
-        .checked_add((taskbar_rect.width() - bar_width) / 2)
-        .ok_or_else(|| "Bar 屏幕横坐标超出可表示范围".to_owned())?;
+    let occupied_regions = taskbar_occupancy::read_positioning_regions(taskbar, taskbar_rect);
+    let screen_x = taskbar_occupancy::resolve_bar_screen_x(
+        position,
+        taskbar_rect,
+        &occupied_regions,
+        bar_width,
+    );
     let screen_y = taskbar_rect
         .top()
         .checked_add((taskbar_rect.height() - bar_height) / 2)

@@ -18,15 +18,20 @@ pub fn report_bar_content_width(
         .get_window("bar")
         .ok_or_else(|| "无法调整宽度：Bar 原生宿主不存在".to_owned())?;
     let taskbar = taskbar::find_main_taskbar()?;
+    let taskbar_rect = taskbar::read_taskbar_rect(&taskbar)?;
     let taskbar_dpi = taskbar::read_taskbar_dpi(&taskbar)?;
     let target_physical_width =
         (f64::from(measurement.target_width()) * taskbar_dpi.scale_factor()).round();
     let target_physical_width = i32::try_from(target_physical_width as i64)
         .map_err(|_| "Bar 目标物理宽度超出可表示范围".to_owned())?;
+    let position = state.settings()?.position;
     let (animation_revision, latest_animation_revision) = state.begin_bar_width_animation();
 
     child_host::animate_window_width(
         bar_window,
+        &taskbar,
+        &taskbar_rect,
+        position,
         target_physical_width,
         animation_revision,
         latest_animation_revision,

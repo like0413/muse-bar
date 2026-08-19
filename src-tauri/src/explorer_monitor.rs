@@ -21,6 +21,7 @@ use crate::{
         PostQuitMessage, RegisterClassW, RegisterWindowMessageW, TranslateMessage, HINSTANCE, HWND,
         LPARAM, LRESULT, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WNDCLASSW, WPARAM,
     },
+    state::AppState,
     taskbar,
 };
 
@@ -128,7 +129,9 @@ fn recover_bar_once(app: &AppHandle) -> Result<(), String> {
         }
     };
 
-    let host_size = match child_host::attach_window(&bar_window, &taskbar, &taskbar_rect) {
+    let position = app.state::<AppState>().settings()?.position;
+    let host_size = match child_host::attach_window(&bar_window, &taskbar, &taskbar_rect, position)
+    {
         Ok(host_size) => host_size,
         Err(error) => {
             if bar_recreated {

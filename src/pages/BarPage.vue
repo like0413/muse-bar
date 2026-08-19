@@ -26,7 +26,13 @@ import {
   type ControlAction,
   type MediaSelectionReason,
 } from '@/lib/media-api'
-import { listenToSettingsChanges } from '@/lib/settings-api'
+import {
+  getSettings,
+  listenToSettingsChanges,
+  readProgressStyle,
+  type ProgressStyle,
+  type SettingsPayload,
+} from '@/lib/settings-api'
 import { openSettingsWindow } from '@/lib/settings-window'
 
 const mediaMetadataStatus = ref('正在读取媒体信息')
@@ -35,6 +41,7 @@ const currentTitle = ref('')
 const currentArtist = ref('')
 const artworkDataUrl = ref<string | null>(null)
 const accentColor = ref('#0078D4')
+const progressStyle = ref<ProgressStyle>('underline')
 const playbackStatusText = ref('')
 const playbackCapabilitiesText = ref('')
 const timelineDetails = ref('')
@@ -110,6 +117,20 @@ const progressPercentage = computed(() => {
   const elapsed = timeline.positionMs - timeline.startMs
   return Math.min(100, Math.max(0, (elapsed / duration) * 100))
 })
+
+/** 将十六进制主色转换为带透明度的颜色，供渐变背景复用。 */
+function accentWithAlpha(color: string, alpha: number): string {
+  const hex = /^#([0-9a-f]{6})$/i.exec(color)?.[1] ?? '0078D4'
+  const red = Number.parseInt(hex.slice(0, 2), 16)
+  const green = Number.parseInt(hex.slice(2, 4), 16)
+  const blue = Number.parseInt(hex.slice(4, 6), 16)
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`
+}
+
+const backgroundProgressStyle = computed(() => ({
+  width: `${progressPercentage.value}%`,
+  backgroundImage: `linear-gradient(90deg, ${accentWithAlpha(accentColor.value, 0.06)}, ${accentWithAlpha(accentColor.value, 0.32)})`,
+}))
 
 /** 将当前会话元数据转换为 Bar 的文本和完整悬停说明。 */
 function showCurrentMediaMetadata(metadata: CurrentMediaMetadata | null) {
@@ -227,19 +248,25 @@ function startBarMeasurement(): void {
   })
 }
 
-/** 设置边界变化时强制重新上报同一自然宽度，让 Rust 计算新的限制结果。 */
+/** 应用会影响 Bar 外观和原生宽度计算的设置。 */
+function applyBarSettings(settings: SettingsPayload): void {
+  progressStyle.value = readProgressStyle(settings)
+  lastReportedNaturalWidth = 0
+  scheduleBarMeasurement()
+}
+
+/** 读取初始设置并监听变化，让外观和宽度无需重建窗口即可更新。 */
 async function startBarSettingsListener(): Promise<void> {
   try {
-    const stopListener = await listenToSettingsChanges(() => {
-      lastReportedNaturalWidth = 0
-      scheduleBarMeasurement()
-    })
+    const stopListener = await listenToSettingsChanges(applyBarSettings)
     if (hasUnmounted) {
       stopListener()
       return
     }
 
     stopSettingsListener = stopListener
+    const settings = await getSettings()
+    if (!hasUnmounted) applyBarSettings(settings)
   } catch (error) {
     barWidthDetails.value = `宽度设置监听失败：${error instanceof Error ? error.message : String(error)}`
   }
@@ -501,13 +528,19 @@ onBeforeUnmount(() => {
       class="bg-secondary text-secondary-foreground relative flex h-full w-full items-center gap-2 overflow-hidden border px-2 text-sm font-medium"
       @contextmenu.prevent="handleOpenSettings"
     >
-      <Avatar class="size-8 rounded-md border">
+      <span
+        v-if="progressStyle === 'background-gradient'"
+        aria-hidden="true"
+        class="pointer-events-none absolute inset-y-0 left-0 z-0 transition-[width] duration-150"
+        :style="backgroundProgressStyle"
+      />
+      <Avatar class="relative z-10 size-8 rounded-md border">
         <AvatarImage v-if="artworkDataUrl" :src="artworkDataUrl" alt="" class="object-cover" />
         <AvatarFallback class="rounded-md" aria-label="暂无歌曲封面">
           <Music2Icon class="text-muted-foreground size-4" />
         </AvatarFallback>
       </Avatar>
-      <div class="flex min-w-0 flex-1 flex-col justify-center" :title="mediaDetails">
+      <div class="relative z-10 flex min-w-0 flex-1 flex-col justify-center" :title="mediaDetails">
         <p ref="titleElement" class="truncate text-sm font-medium">{{ displayTitle }}</p>
         <p
           v-if="currentArtist"
@@ -517,7 +550,7 @@ onBeforeUnmount(() => {
           {{ currentArtist }}
         </p>
       </div>
-      <ButtonGroup aria-label="媒体控制" class="shrink-0">
+      <ButtonGroup aria-label="媒体控制" class="relative z-10 shrink-0">
         <Button
           variant="ghost"
           size="icon-sm"
@@ -553,8 +586,9 @@ onBeforeUnmount(() => {
         </Button>
       </ButtonGroup>
       <span
+        v-if="progressStyle === 'underline'"
         aria-hidden="true"
-        class="absolute bottom-0 left-0 h-0.5 transition-[width] duration-150"
+        class="pointer-events-none absolute bottom-0 left-0 z-20 h-0.5 transition-[width] duration-150"
         :style="{ backgroundColor: accentColor, width: `${progressPercentage}%` }"
       />
     </section>

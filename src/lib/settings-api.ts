@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 export type SettingsPayload = Record<string, unknown>
 export type ColorMode = 'system' | 'dark' | 'light'
+export type ProgressStyle = 'underline' | 'background-gradient'
 
 const SETTINGS_CHANGED_EVENT = 'settings-changed'
 
@@ -34,4 +35,9 @@ export function readTaskbarPosition(settings: SettingsPayload | undefined): stri
 export function readColorMode(settings: SettingsPayload | undefined): ColorMode {
   const colorMode = settings?.colorMode
   return colorMode === 'dark' || colorMode === 'light' ? colorMode : 'system'
+}
+
+/** 从设置载荷中读取进度样式，缺少或无法识别时使用默认的底部细线。 */
+export function readProgressStyle(settings: SettingsPayload | undefined): ProgressStyle {
+  return settings?.progressStyle === 'background-gradient' ? 'background-gradient' : 'underline'
 }
