@@ -1,4 +1,6 @@
-use std::time::SystemTime;
+use std::{sync::RwLock, time::SystemTime};
+
+use tauri::{AppHandle, Runtime};
 
 use crate::settings::AppSettings;
 
@@ -7,7 +9,7 @@ use crate::settings::AppSettings;
 pub struct AppState {
     application_version: String,
     started_at: SystemTime,
-    settings: AppSettings,
+    settings: RwLock<AppSettings>,
 }
 
 impl AppState {
@@ -16,7 +18,7 @@ impl AppState {
         Self {
             application_version: application_version.into(),
             started_at: SystemTime::now(),
-            settings,
+            settings: RwLock::new(settings),
         }
     }
 
@@ -30,8 +32,30 @@ impl AppState {
         self.started_at
     }
 
-    /// 返回本次运行启动时读取到的用户设置。
-    pub fn settings(&self) -> &AppSettings {
-        &self.settings
+    /// 返回当前用户设置的独立副本，避免调用方长期占用读锁。
+    pub fn settings(&self) -> Result<AppSettings, String> {
+        self.settings
+            .read()
+            .map(|settings| settings.clone())
+            .map_err(|_| "无法读取应用设置：设置状态锁已损坏".to_owned())
+    }
+
+    /// 串行保存并替换内存设置，确保多个窗口不会同时写入同一临时文件。
+    pub fn update_settings<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        updated_settings: AppSettings,
+    ) -> Result<AppSettings, String> {
+        let mut current_settings = self
+            .settings
+            .write()
+            .map_err(|_| "无法更新应用设置：设置状态锁已损坏".to_owned())?;
+
+        updated_settings
+            .save(app)
+            .map_err(|error| format!("无法保存应用设置：{error}"))?;
+        *current_settings = updated_settings.clone();
+
+        Ok(updated_settings)
     }
 }
