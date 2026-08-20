@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { Music2Icon, PauseIcon, PlayIcon, SkipBackIcon, SkipForwardIcon } from '@lucide/vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import { Button } from '@/components/ui/button'
-import { ButtonGroup, ButtonGroupSeparator } from '@/components/ui/button-group'
+import BarArtwork from '@/components/bar/BarArtwork.vue'
+import BarMediaControls from '@/components/bar/BarMediaControls.vue'
+import BarProgress from '@/components/bar/BarProgress.vue'
+import BarTrackInfo from '@/components/bar/BarTrackInfo.vue'
 import { reportBarContentWidth } from '@/lib/bar-layout-api'
 import {
   controlMedia,
@@ -55,8 +55,6 @@ const currentPlaybackCapabilities = ref<CurrentPlaybackCapabilities | null>(null
 const currentTimeline = ref<CurrentTimeline | null>(null)
 const barPageElement = ref<HTMLElement>()
 const barSurfaceElement = ref<HTMLElement>()
-const titleElement = ref<HTMLElement>()
-const artistElement = ref<HTMLElement>()
 let stopMediaMetadataListener: UnlistenFn | undefined
 let stopPlaybackCapabilitiesListener: UnlistenFn | undefined
 let stopPlaybackStatusListener: UnlistenFn | undefined
@@ -118,20 +116,6 @@ const progressPercentage = computed(() => {
   return Math.min(100, Math.max(0, (elapsed / duration) * 100))
 })
 
-/** 将十六进制主色转换为带透明度的颜色，供渐变背景复用。 */
-function accentWithAlpha(color: string, alpha: number): string {
-  const hex = /^#([0-9a-f]{6})$/i.exec(color)?.[1] ?? '0078D4'
-  const red = Number.parseInt(hex.slice(0, 2), 16)
-  const green = Number.parseInt(hex.slice(2, 4), 16)
-  const blue = Number.parseInt(hex.slice(4, 6), 16)
-  return `rgba(${red}, ${green}, ${blue}, ${alpha})`
-}
-
-const backgroundProgressStyle = computed(() => ({
-  width: `${progressPercentage.value}%`,
-  backgroundImage: `linear-gradient(90deg, ${accentWithAlpha(accentColor.value, 0.06)}, ${accentWithAlpha(accentColor.value, 0.32)})`,
-}))
-
 /** 将当前会话元数据转换为 Bar 的文本和完整悬停说明。 */
 function showCurrentMediaMetadata(metadata: CurrentMediaMetadata | null) {
   if (!metadata) {
@@ -185,19 +169,17 @@ function measureTextContentWidth(element: HTMLElement | undefined): number {
 function measureBarNaturalWidth(): number | undefined {
   const page = barPageElement.value
   const surface = barSurfaceElement.value
-  const title = titleElement.value
+  const title = surface?.querySelector<HTMLElement>('[data-bar-title]')
   if (!page || !surface || !title) return undefined
 
   const artwork = surface.querySelector<HTMLElement>('[data-slot="avatar"]')
   const controls = surface.querySelector<HTMLElement>('[data-slot="button-group"]')
+  const artist = surface.querySelector<HTMLElement>('[data-bar-artist]') ?? undefined
   if (!artwork || !controls) return undefined
 
   const surfaceStyle = window.getComputedStyle(surface)
   const gap = readCssPixels(surfaceStyle.columnGap || surfaceStyle.gap)
-  const textWidth = Math.max(
-    measureTextContentWidth(title),
-    measureTextContentWidth(artistElement.value),
-  )
+  const textWidth = Math.max(measureTextContentWidth(title), measureTextContentWidth(artist))
 
   return (
     readHorizontalInsets(page) +
@@ -234,13 +216,14 @@ function scheduleBarMeasurement(): void {
 /** 观察 Bar 各区域尺寸，并在字体完成加载后补做一次自然宽度测量。 */
 function startBarMeasurement(): void {
   const surface = barSurfaceElement.value
-  const title = titleElement.value
+  const title = surface?.querySelector<HTMLElement>('[data-bar-title]')
   if (!surface || !title) return
 
   barResizeObserver = new ResizeObserver(scheduleBarMeasurement)
   barResizeObserver.observe(surface)
   barResizeObserver.observe(title)
-  if (artistElement.value) barResizeObserver.observe(artistElement.value)
+  const artist = surface.querySelector<HTMLElement>('[data-bar-artist]')
+  if (artist) barResizeObserver.observe(artist)
   scheduleBarMeasurement()
 
   void document.fonts.ready.then(() => {
@@ -528,66 +511,22 @@ onBeforeUnmount(() => {
       class="bg-secondary text-secondary-foreground relative flex h-full w-full items-center gap-2 overflow-hidden border px-2 text-sm font-medium"
       @contextmenu.prevent="handleOpenSettings"
     >
-      <span
-        v-if="progressStyle === 'background-gradient'"
-        aria-hidden="true"
-        class="pointer-events-none absolute inset-y-0 left-0 z-0 transition-[width] duration-150"
-        :style="backgroundProgressStyle"
+      <BarProgress
+        :progress-style="progressStyle"
+        :percentage="progressPercentage"
+        :accent-color="accentColor"
       />
-      <Avatar class="relative z-10 size-9.5 rounded-sm">
-        <AvatarImage v-if="artworkDataUrl" :src="artworkDataUrl" alt="" class="object-cover" />
-        <AvatarFallback class="rounded-md" aria-label="暂无歌曲封面">
-          <Music2Icon class="text-muted-foreground size-4" />
-        </AvatarFallback>
-      </Avatar>
-      <div class="relative z-10 flex min-w-0 flex-1 flex-col justify-center" :title="mediaDetails">
-        <p ref="titleElement" class="truncate text-sm font-medium">{{ displayTitle }}</p>
-        <p
-          v-if="currentArtist"
-          ref="artistElement"
-          class="text-muted-foreground truncate text-xs font-normal"
-        >
-          {{ currentArtist }}
-        </p>
-      </div>
-      <ButtonGroup aria-label="媒体控制" class="relative z-10 shrink-0">
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="上一曲"
-          title="上一曲"
-          :disabled="isControlPending || !currentPlaybackCapabilities?.canPrevious"
-          @click="performControl({ type: 'previous' })"
-        >
-          <SkipBackIcon data-icon="inline-start" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          :aria-label="isPlaying ? '暂停' : '播放'"
-          :title="isPlaying ? '暂停' : '播放'"
-          :disabled="isControlPending || !canTogglePlayPause"
-          @click="performControl({ type: 'togglePlayPause' })"
-        >
-          <PauseIcon v-if="isPlaying" data-icon="inline-start" />
-          <PlayIcon v-else data-icon="inline-start" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="下一曲"
-          title="下一曲"
-          :disabled="isControlPending || !currentPlaybackCapabilities?.canNext"
-          @click="performControl({ type: 'next' })"
-        >
-          <SkipForwardIcon data-icon="inline-start" />
-        </Button>
-      </ButtonGroup>
-      <span
-        v-if="progressStyle === 'underline'"
-        aria-hidden="true"
-        class="pointer-events-none absolute bottom-0 left-0 z-20 h-0.5 transition-[width] duration-150"
-        :style="{ backgroundColor: accentColor, width: `${progressPercentage}%` }"
+      <BarArtwork :artwork-data-url="artworkDataUrl" />
+      <BarTrackInfo :title="displayTitle" :artist="currentArtist" :details="mediaDetails" />
+      <BarMediaControls
+        :is-playing="isPlaying"
+        :is-pending="isControlPending"
+        :can-toggle-play-pause="canTogglePlayPause"
+        :can-previous="currentPlaybackCapabilities?.canPrevious ?? false"
+        :can-next="currentPlaybackCapabilities?.canNext ?? false"
+        @previous="performControl({ type: 'previous' })"
+        @toggle-play-pause="performControl({ type: 'togglePlayPause' })"
+        @next="performControl({ type: 'next' })"
       />
     </section>
   </main>
