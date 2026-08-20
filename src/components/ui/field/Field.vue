@@ -3,7 +3,8 @@ import type { HTMLAttributes } from 'vue'
 
 import { cn } from '@/lib/utils'
 
-import { fieldVariants, type FieldVariants } from '.'
+import type { FieldVariants } from '.'
+import { fieldVariants } from '.'
 
 const props = defineProps<{
   class?: HTMLAttributes['class']

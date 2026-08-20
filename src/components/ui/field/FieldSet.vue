@@ -9,15 +9,16 @@ const props = defineProps<{
 </script>
 
 <template>
-  <div
-    data-slot="field-label"
+  <fieldset
+    data-slot="field-set"
     :class="
       cn(
-        'flex w-fit items-center gap-2 text-sm leading-snug font-medium group-data-[disabled=true]/field:opacity-50',
+        'flex flex-col gap-6',
+        'has-[>[data-slot=checkbox-group]]:gap-3 has-[>[data-slot=radio-group]]:gap-3',
         props.class,
       )
     "
   >
     <slot />
-  </div>
+  </fieldset>
 </template>

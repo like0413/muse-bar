@@ -5,19 +5,23 @@ import { cn } from '@/lib/utils'
 
 const props = defineProps<{
   class?: HTMLAttributes['class']
+  variant?: 'legend' | 'label'
 }>()
 </script>
 
 <template>
-  <div
-    data-slot="field-label"
+  <legend
+    data-slot="field-legend"
+    :data-variant="variant"
     :class="
       cn(
-        'flex w-fit items-center gap-2 text-sm leading-snug font-medium group-data-[disabled=true]/field:opacity-50',
+        'mb-3 font-medium',
+        'data-[variant=legend]:text-base',
+        'data-[variant=label]:text-sm',
         props.class,
       )
     "
   >
     <slot />
-  </div>
+  </legend>
 </template>
