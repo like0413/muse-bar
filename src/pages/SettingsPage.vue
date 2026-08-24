@@ -67,12 +67,16 @@ import {
   readMinimumWidth,
   readProgressStyle,
   readTaskbarPosition,
+  readTitleScrollEnabled,
+  readTitleScrollMode,
+  readTitleScrollSpeed,
   readWindowMode,
   updateSettings,
   type ColorMode,
   type ProgressStyle,
   type SettingsPayload,
   type TaskbarPosition,
+  type TitleScrollMode,
 } from '@/lib/settings-api'
 import { showReadySettingsWindow } from '@/lib/settings-window'
 import {
@@ -94,6 +98,9 @@ type SettingsSection = 'taskbar' | 'appearance' | 'media' | 'general' | 'diagnos
 const WIDTH_SLIDER_MINIMUM = 200
 const WIDTH_SLIDER_MAXIMUM = 520
 const WIDTH_SLIDER_STEP = 4
+const TITLE_SCROLL_SPEED_MINIMUM = 10
+const TITLE_SCROLL_SPEED_MAXIMUM = 100
+const TITLE_SCROLL_SPEED_STEP = 5
 
 const activeSection = ref<SettingsSection>('taskbar')
 const windowLabel = readCurrentWindowLabel()
@@ -115,6 +122,7 @@ const logDirectoryError = ref<string>()
 const minWidthDraft = ref<number[]>([])
 const maxWidthDraft = ref<number[]>([])
 const manualOffsetDraft = ref<number[]>([])
+const titleScrollSpeedDraft = ref<number[]>([])
 let stopMediaSnapshotListener: UnlistenFn | undefined
 let stopTimelineListener: UnlistenFn | undefined
 let stopMediaSessionIdentityListener: UnlistenFn | undefined
@@ -124,6 +132,8 @@ let hasUnmounted = false
 const currentPosition = computed(() => readTaskbarPosition(settings.value))
 const currentColorMode = computed(() => readColorMode(settings.value))
 const currentProgressStyle = computed(() => readProgressStyle(settings.value))
+const titleScrollEnabled = computed(() => readTitleScrollEnabled(settings.value))
+const currentTitleScrollMode = computed(() => readTitleScrollMode(settings.value))
 const currentWindowMode = computed(() => readWindowMode(settings.value))
 const launchOnStartup = computed(() => readLaunchOnStartup(settings.value))
 const previewAccentColor = computed(() => mediaSnapshot.value?.accentColor || 'var(--primary)')
@@ -158,6 +168,10 @@ const colorModeOptions: ReadonlyArray<{ value: ColorMode; label: string }> = [
 const progressStyleOptions: ReadonlyArray<{ value: ProgressStyle; label: string }> = [
   { value: 'underline', label: '底部细线' },
   { value: 'background-gradient', label: '背景渐变' },
+]
+const titleScrollModeOptions: ReadonlyArray<{ value: TitleScrollMode; label: string }> = [
+  { value: 'continuous', label: '连续滚动' },
+  { value: 'restart', label: '从头滚动' },
 ]
 const playerKindLabels: Record<MediaPlayerKind, string> = {
   qqMusic: 'QQ 音乐',
@@ -226,6 +240,30 @@ function handleProgressStyleChange(progressStyle: unknown): void {
     progressStyle !== currentProgressStyle.value
   )
     void saveSettingsPatch({ progressStyle })
+}
+
+/** 保存标题滚动总开关；关闭后下级参数保留但不再应用。 */
+function handleTitleScrollEnabledChange(enabled: boolean): void {
+  if (enabled !== titleScrollEnabled.value) void saveSettingsPatch({ titleScrollEnabled: enabled })
+}
+
+/** 接收单选组的未知值，只保存合法的标题滚动方式。 */
+function handleTitleScrollModeChange(mode: unknown): void {
+  if ((mode === 'continuous' || mode === 'restart') && mode !== currentTitleScrollMode.value)
+    void saveSettingsPatch({ titleScrollMode: mode })
+}
+
+/** 更新标题滚动速度草稿，拖动期间只改变设置页显示。 */
+function handleTitleScrollSpeedDraftChange(value: number[]): void {
+  const speed = value[0]
+  if (speed !== undefined) titleScrollSpeedDraft.value = [speed]
+}
+
+/** 提交标题滚动速度，避免拖动过程中连续写入配置文件。 */
+function commitTitleScrollSpeed(value: number[]): void {
+  handleTitleScrollSpeedDraftChange(value)
+  const speed = titleScrollSpeedDraft.value[0]
+  if (speed !== undefined) void saveSettingsPatch({ titleScrollSpeed: speed })
 }
 
 /** 保存开机启动开关，Rust 会同步 Windows 当前用户启动项。 */
@@ -408,9 +446,11 @@ watch(
     const minimumWidth = readMinimumWidth(value)
     const maximumWidth = readMaximumWidth(value)
     const manualOffset = readManualOffset(value)
+    const titleScrollSpeed = readTitleScrollSpeed(value)
     if (minimumWidth !== undefined) minWidthDraft.value = [minimumWidth]
     if (maximumWidth !== undefined) maxWidthDraft.value = [maximumWidth]
     if (manualOffset !== undefined) manualOffsetDraft.value = [manualOffset]
+    titleScrollSpeedDraft.value = [titleScrollSpeed]
   },
   { immediate: true },
 )
@@ -671,6 +711,70 @@ onBeforeUnmount(() => {
                   />
                 </div>
               </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>滚动文本</CardTitle>
+              <CardDescription>歌曲名超过可用宽度时自动滚动，短标题始终保持静止。</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <FieldGroup>
+                <Field orientation="horizontal">
+                  <FieldContent>
+                    <FieldTitle>滚动长标题</FieldTitle>
+                    <FieldDescription>只影响歌曲名，不滚动歌手信息。</FieldDescription>
+                  </FieldContent>
+                  <Switch
+                    :model-value="titleScrollEnabled"
+                    :disabled="isSavingSettings || !settings"
+                    aria-label="滚动长标题"
+                    @update:model-value="handleTitleScrollEnabledChange"
+                  />
+                </Field>
+                <Field :data-disabled="!titleScrollEnabled">
+                  <div class="flex items-center justify-between gap-4">
+                    <FieldLabel>滚动速度</FieldLabel>
+                    <Badge variant="outline"
+                      >{{ titleScrollSpeedDraft[0] ?? '读取中'
+                      }}<template v-if="titleScrollSpeedDraft[0] !== undefined">
+                        px/s</template
+                      ></Badge
+                    >
+                  </div>
+                  <Slider
+                    aria-label="标题滚动速度"
+                    :model-value="titleScrollSpeedDraft"
+                    :min="TITLE_SCROLL_SPEED_MINIMUM"
+                    :max="TITLE_SCROLL_SPEED_MAXIMUM"
+                    :step="TITLE_SCROLL_SPEED_STEP"
+                    :disabled="isSavingSettings || !settings || !titleScrollEnabled"
+                    @update:model-value="handleTitleScrollSpeedDraftChange"
+                    @value-commit="commitTitleScrollSpeed"
+                  />
+                  <FieldDescription>数值越大，标题每秒移动的距离越远。</FieldDescription>
+                </Field>
+                <Field :data-disabled="!titleScrollEnabled">
+                  <FieldLabel>滚动方式</FieldLabel>
+                  <ToggleGroup
+                    type="single"
+                    variant="outline"
+                    :model-value="currentTitleScrollMode"
+                    :disabled="isSavingSettings || !settings || !titleScrollEnabled"
+                    @update:model-value="handleTitleScrollModeChange"
+                  >
+                    <ToggleGroupItem
+                      v-for="option in titleScrollModeOptions"
+                      :key="option.value"
+                      :value="option.value"
+                      >{{ option.label }}</ToggleGroupItem
+                    >
+                  </ToggleGroup>
+                  <FieldDescription>
+                    连续滚动会让两份标题首尾衔接；从头滚动会在末尾停顿后回到起点。
+                  </FieldDescription>
+                </Field>
+              </FieldGroup>
             </CardContent>
           </Card>
         </template>

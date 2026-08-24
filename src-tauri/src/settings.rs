@@ -11,11 +11,15 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Runtime};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
-const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 7;
+const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 8;
+const WIDTH_SETTINGS_SCHEMA_VERSION: u32 = 7;
 const DEFAULT_MIN_WIDTH: u32 = 240;
 const DEFAULT_MAX_WIDTH: u32 = 380;
 const ALLOWED_MIN_WIDTH: u32 = 200;
 const ALLOWED_MAX_WIDTH: u32 = 520;
+const DEFAULT_TITLE_SCROLL_SPEED: u32 = 30;
+const MINIMUM_TITLE_SCROLL_SPEED: u32 = 10;
+const MAXIMUM_TITLE_SCROLL_SPEED: u32 = 100;
 
 /// Bar 窗口与 Windows 任务栏之间的宿主模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +60,16 @@ pub enum ColorMode {
     Light,
 }
 
+/// 歌曲标题超出可用宽度时采用的滚动循环方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TitleScrollMode {
+    /// 复制标题并首尾衔接，形成不间断的循环滚动。
+    Continuous,
+    /// 单个标题滚动到末尾后回到起点重新开始。
+    Restart,
+}
+
 /// Muse Bar 可持久化的用户设置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -69,6 +83,9 @@ pub struct AppSettings {
     pub manual_offset: i32,
     pub progress_style: ProgressStyle,
     pub color_mode: ColorMode,
+    pub title_scroll_enabled: bool,
+    pub title_scroll_speed: u32,
+    pub title_scroll_mode: TitleScrollMode,
     pub launch_on_startup: bool,
 }
 
@@ -84,6 +101,9 @@ impl Default for AppSettings {
             manual_offset: 0,
             progress_style: ProgressStyle::Underline,
             color_mode: ColorMode::System,
+            title_scroll_enabled: true,
+            title_scroll_speed: DEFAULT_TITLE_SCROLL_SPEED,
+            title_scroll_mode: TitleScrollMode::Continuous,
             launch_on_startup: false,
         }
     }
@@ -104,7 +124,8 @@ impl AppSettings {
             Ok(mut settings) => {
                 let migrated = settings.migrate();
                 let width_range_normalized = settings.normalize_width_range();
-                if migrated || width_range_normalized {
+                let title_scroll_speed_normalized = settings.normalize_title_scroll_speed();
+                if migrated || width_range_normalized || title_scroll_speed_normalized {
                     // 迁移写回失败不应阻止启动；本次运行仍使用迁移后的内存设置。
                     let _ = settings.save(app);
                 }
@@ -144,9 +165,11 @@ impl AppSettings {
             return false;
         }
 
-        // 宽度范围属于当前版本的产品约束，升级后应直接采用新版值；其余用户设置保持不变。
-        self.min_width = DEFAULT_MIN_WIDTH;
-        self.max_width = DEFAULT_MAX_WIDTH;
+        // 第 7 版曾调整产品宽度约束；后续无关字段升级不能再次覆盖用户已经保存的宽度。
+        if self.schema_version < WIDTH_SETTINGS_SCHEMA_VERSION {
+            self.min_width = DEFAULT_MIN_WIDTH;
+            self.max_width = DEFAULT_MAX_WIDTH;
+        }
         self.schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
         true
     }
@@ -158,6 +181,16 @@ impl AppSettings {
         let changed = self.min_width != minimum_width || self.max_width != maximum_width;
         self.min_width = minimum_width;
         self.max_width = maximum_width;
+        changed
+    }
+
+    /// 将标题滚动速度限制在设置页提供的范围内。
+    pub(crate) fn normalize_title_scroll_speed(&mut self) -> bool {
+        let speed = self
+            .title_scroll_speed
+            .clamp(MINIMUM_TITLE_SCROLL_SPEED, MAXIMUM_TITLE_SCROLL_SPEED);
+        let changed = self.title_scroll_speed != speed;
+        self.title_scroll_speed = speed;
         changed
     }
 }

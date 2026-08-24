@@ -83,6 +83,7 @@ impl AppState {
             .map_err(|_| "无法更新应用设置：设置状态锁已损坏".to_owned())?;
 
         updated_settings.normalize_width_range();
+        updated_settings.normalize_title_scroll_speed();
         updated_settings
             .save(app)
             .map_err(|error| format!("无法保存应用设置：{error}"))?;

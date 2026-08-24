@@ -5,6 +5,7 @@ export type SettingsPayload = Record<string, unknown>
 export type ColorMode = 'system' | 'dark' | 'light'
 export type ProgressStyle = 'underline' | 'background-gradient'
 export type TaskbarPosition = 'left' | 'center' | 'right'
+export type TitleScrollMode = 'continuous' | 'restart'
 export type WindowMode = 'auto' | 'owner'
 
 const SETTINGS_CHANGED_EVENT = 'settings-changed'
@@ -43,6 +44,22 @@ export function readColorMode(settings: SettingsPayload | undefined): ColorMode 
 /** 从设置载荷中读取进度样式，缺少或无法识别时使用默认的底部细线。 */
 export function readProgressStyle(settings: SettingsPayload | undefined): ProgressStyle {
   return settings?.progressStyle === 'background-gradient' ? 'background-gradient' : 'underline'
+}
+
+/** 从设置载荷中读取标题滚动开关，旧设置缺少字段时默认开启。 */
+export function readTitleScrollEnabled(settings: SettingsPayload | undefined): boolean {
+  return settings?.titleScrollEnabled !== false
+}
+
+/** 从设置载荷中读取标题滚动速度，异常值回退到每秒 30 像素。 */
+export function readTitleScrollSpeed(settings: SettingsPayload | undefined): number {
+  const speed = settings?.titleScrollSpeed
+  return typeof speed === 'number' && Number.isFinite(speed) ? speed : 30
+}
+
+/** 从设置载荷中读取标题滚动方式，旧设置缺少字段时默认连续滚动。 */
+export function readTitleScrollMode(settings: SettingsPayload | undefined): TitleScrollMode {
+  return settings?.titleScrollMode === 'restart' ? 'restart' : 'continuous'
 }
 
 /** 从设置载荷中读取 Bar 的最小逻辑宽度。 */
