@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { Music2Icon } from '@lucide/vue'
+import { storeToRefs } from 'pinia'
+import { computed } from 'vue'
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 
-defineProps<{
-  artworkDataUrl: string | null
-}>()
+import { useBarStore } from '../bar-store'
+
+const barStore = useBarStore()
+const { snapshot } = storeToRefs(barStore)
+const artworkDataUrl = computed(() => snapshot.value?.artworkDataUrl ?? null)
 </script>
 
 <template>

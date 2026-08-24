@@ -8,7 +8,7 @@ export const routes: RouteRecordRaw[] = [
   {
     path: '/bar',
     name: 'bar',
-    component: () => import('@/pages/BarPage.vue'),
+    component: () => import('@/pages/bar/index.vue'),
   },
   {
     path: '/settings',

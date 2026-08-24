@@ -1,13 +1,25 @@
 <script setup lang="ts">
+import { storeToRefs } from 'pinia'
 import { computed } from 'vue'
 
-import type { ProgressStyle } from '@/lib/settings-api'
+import { readProgressStyle } from '@/lib/settings-api'
 
-const props = defineProps<{
-  progressStyle: ProgressStyle
-  percentage: number
-  accentColor: string
-}>()
+import { useBarStore } from '../bar-store'
+
+const barStore = useBarStore()
+const { settings, snapshot } = storeToRefs(barStore)
+const progressStyle = computed(() => readProgressStyle(settings.value))
+const accentColor = computed(() => snapshot.value?.accentColor || '#0078D4')
+const progressPercentage = computed(() => {
+  const timeline = snapshot.value?.timeline
+  if (!timeline) return 0
+
+  const duration = timeline.endMs - timeline.startMs
+  if (duration <= 0) return 0
+
+  const elapsed = timeline.positionMs - timeline.startMs
+  return Math.min(100, Math.max(0, (elapsed / duration) * 100))
+})
 
 /** 将十六进制主色转换为带透明度的颜色，供渐变背景复用。 */
 function accentWithAlpha(color: string, alpha: number): string {
@@ -19,8 +31,8 @@ function accentWithAlpha(color: string, alpha: number): string {
 }
 
 const backgroundProgressStyle = computed(() => ({
-  width: `${props.percentage}%`,
-  backgroundImage: `linear-gradient(90deg, ${accentWithAlpha(props.accentColor, 0.06)}, ${accentWithAlpha(props.accentColor, 0.32)})`,
+  width: `${progressPercentage.value}%`,
+  backgroundImage: `linear-gradient(90deg, ${accentWithAlpha(accentColor.value, 0.06)}, ${accentWithAlpha(accentColor.value, 0.32)})`,
 }))
 </script>
 
@@ -35,6 +47,6 @@ const backgroundProgressStyle = computed(() => ({
     v-if="progressStyle === 'underline'"
     aria-hidden="true"
     class="pointer-events-none absolute bottom-0 left-0 z-20 h-0.5 transition-[width] duration-150"
-    :style="{ backgroundColor: accentColor, width: `${percentage}%` }"
+    :style="{ backgroundColor: accentColor, width: `${progressPercentage}%` }"
   />
 </template>
