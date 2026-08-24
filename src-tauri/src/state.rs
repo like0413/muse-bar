@@ -73,13 +73,14 @@ impl AppState {
     pub fn update_settings<R: Runtime>(
         &self,
         app: &AppHandle<R>,
-        updated_settings: AppSettings,
+        mut updated_settings: AppSettings,
     ) -> Result<AppSettings, String> {
         let mut current_settings = self
             .settings
             .write()
             .map_err(|_| "无法更新应用设置：设置状态锁已损坏".to_owned())?;
 
+        updated_settings.normalize_width_range();
         updated_settings
             .save(app)
             .map_err(|error| format!("无法保存应用设置：{error}"))?;
@@ -99,8 +100,8 @@ impl AppState {
         }
 
         let settings = self.settings()?;
-        let minimum_width = settings.min_width.max(1);
-        let maximum_width = settings.max_width.max(minimum_width);
+        let minimum_width = settings.min_width;
+        let maximum_width = settings.max_width;
         let rounded_width = natural_width.ceil() as u32;
         let measurement = BarWidthMeasurement {
             natural_width,

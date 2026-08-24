@@ -91,6 +91,10 @@ import type { RuntimeInfo } from '@/types/runtime-info'
 
 type SettingsSection = 'taskbar' | 'appearance' | 'media' | 'general' | 'diagnostics'
 
+const WIDTH_SLIDER_MINIMUM = 200
+const WIDTH_SLIDER_MAXIMUM = 520
+const WIDTH_SLIDER_STEP = 4
+
 const activeSection = ref<SettingsSection>('taskbar')
 const windowLabel = readCurrentWindowLabel()
 const runtimeInfo = ref<RuntimeInfo>()
@@ -229,18 +233,34 @@ function handleLaunchOnStartupChange(enabled: boolean): void {
   if (enabled !== launchOnStartup.value) void saveSettingsPatch({ launchOnStartup: enabled })
 }
 
-/** 提交最小宽度，并保证它不会超过当前最大宽度。 */
-function commitMinimumWidth(value: number[]): void {
+/** 只更新最小宽度草稿，达到最大宽度后停止。 */
+function handleMinimumWidthDraftChange(value: number[]): void {
   const width = value[0]
-  if (width !== undefined)
-    void saveSettingsPatch({ minWidth: Math.min(width, maxWidthDraft.value[0] ?? width) })
+  if (width === undefined) return
+  const maximumWidth = maxWidthDraft.value[0] ?? WIDTH_SLIDER_MAXIMUM
+  minWidthDraft.value = [Math.min(width, maximumWidth)]
 }
 
-/** 提交最大宽度，并保证它不会小于当前最小宽度。 */
-function commitMaximumWidth(value: number[]): void {
+/** 只更新最大宽度草稿，达到最小宽度后停止。 */
+function handleMaximumWidthDraftChange(value: number[]): void {
   const width = value[0]
-  if (width !== undefined)
-    void saveSettingsPatch({ maxWidth: Math.max(width, minWidthDraft.value[0] ?? width) })
+  if (width === undefined) return
+  const minimumWidth = minWidthDraft.value[0] ?? WIDTH_SLIDER_MINIMUM
+  maxWidthDraft.value = [Math.max(width, minimumWidth)]
+}
+
+/** 提交已经限制在合法边界内的最小宽度草稿。 */
+function commitMinimumWidth(value: number[]): void {
+  handleMinimumWidthDraftChange(value)
+  const width = minWidthDraft.value[0]
+  if (width !== undefined) void saveSettingsPatch({ minWidth: width })
+}
+
+/** 提交已经限制在合法边界内的最大宽度草稿。 */
+function commitMaximumWidth(value: number[]): void {
+  handleMaximumWidthDraftChange(value)
+  const width = maxWidthDraft.value[0]
+  if (width !== undefined) void saveSettingsPatch({ maxWidth: width })
 }
 
 /** 并行读取应用启动信息和 Windows 构建号，单项失败不遮住另一项。 */
@@ -499,11 +519,11 @@ onBeforeUnmount(() => {
                   <Slider
                     aria-label="Bar 最小宽度"
                     :model-value="minWidthDraft"
-                    :min="200"
-                    :max="maxWidthDraft[0] ?? 520"
-                    :step="4"
+                    :min="WIDTH_SLIDER_MINIMUM"
+                    :max="WIDTH_SLIDER_MAXIMUM"
+                    :step="WIDTH_SLIDER_STEP"
                     :disabled="isSavingSettings || !settings"
-                    @update:model-value="minWidthDraft = $event"
+                    @update:model-value="handleMinimumWidthDraftChange"
                     @value-commit="commitMinimumWidth"
                   />
                   <FieldDescription>短标题时 Bar 不会窄于该值。</FieldDescription>
@@ -519,11 +539,11 @@ onBeforeUnmount(() => {
                   <Slider
                     aria-label="Bar 最大宽度"
                     :model-value="maxWidthDraft"
-                    :min="minWidthDraft[0] ?? 200"
-                    :max="520"
-                    :step="4"
+                    :min="WIDTH_SLIDER_MINIMUM"
+                    :max="WIDTH_SLIDER_MAXIMUM"
+                    :step="WIDTH_SLIDER_STEP"
                     :disabled="isSavingSettings || !settings"
-                    @update:model-value="maxWidthDraft = $event"
+                    @update:model-value="handleMaximumWidthDraftChange"
                     @value-commit="commitMaximumWidth"
                   />
                   <FieldDescription>长标题超过最大宽度后会截断，不挤压控制按钮。</FieldDescription>

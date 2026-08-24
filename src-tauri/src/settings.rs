@@ -14,6 +14,8 @@ const SETTINGS_FILE_NAME: &str = "settings.json";
 const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 7;
 const DEFAULT_MIN_WIDTH: u32 = 240;
 const DEFAULT_MAX_WIDTH: u32 = 380;
+const ALLOWED_MIN_WIDTH: u32 = 200;
+const ALLOWED_MAX_WIDTH: u32 = 520;
 
 /// Bar 窗口与 Windows 任务栏之间的宿主模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,7 +102,9 @@ impl AppSettings {
 
         match serde_json::from_str::<Self>(&contents) {
             Ok(mut settings) => {
-                if settings.migrate() {
+                let migrated = settings.migrate();
+                let width_range_normalized = settings.normalize_width_range();
+                if migrated || width_range_normalized {
                     // 迁移写回失败不应阻止启动；本次运行仍使用迁移后的内存设置。
                     let _ = settings.save(app);
                 }
@@ -145,6 +149,16 @@ impl AppSettings {
         self.max_width = DEFAULT_MAX_WIDTH;
         self.schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
         true
+    }
+
+    /// 将宽度限制在产品范围内，并保证最小值不大于最大值。
+    pub(crate) fn normalize_width_range(&mut self) -> bool {
+        let minimum_width = self.min_width.clamp(ALLOWED_MIN_WIDTH, ALLOWED_MAX_WIDTH);
+        let maximum_width = self.max_width.clamp(minimum_width, ALLOWED_MAX_WIDTH);
+        let changed = self.min_width != minimum_width || self.max_width != maximum_width;
+        self.min_width = minimum_width;
+        self.max_width = maximum_width;
+        changed
     }
 }
 

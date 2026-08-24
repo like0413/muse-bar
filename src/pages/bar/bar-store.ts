@@ -5,8 +5,10 @@ import { shallowRef } from 'vue'
 import {
   getCurrentMediaSnapshot,
   listenToCurrentMediaSnapshotChanges,
+  listenToCurrentTimelineChanges,
   listenToMediaSessionActivityChanges,
   refreshSelectedMediaSession,
+  type CurrentTimeline,
   type MediaSelectionReason,
   type MediaSnapshot,
 } from '@/lib/media-api'
@@ -33,6 +35,12 @@ export const useBarStore = defineStore('bar', () => {
   function applySnapshot(nextSnapshot: MediaSnapshot | null): void {
     snapshot.value = nextSnapshot
     mediaStatus.value = nextSnapshot ? '' : '当前没有媒体会话'
+  }
+
+  /** 将轻量时间轴事件合并进当前快照，避免仅因进度变化重新传输封面等数据。 */
+  function applyTimeline(timeline: CurrentTimeline | null): void {
+    if (!snapshot.value) return
+    snapshot.value = { ...snapshot.value, timeline }
   }
 
   /** 应用设置页和 Rust 广播的完整设置。 */
@@ -63,10 +71,13 @@ export const useBarStore = defineStore('bar', () => {
     }
   }
 
-  /** 建立统一媒体快照监听，并在监听就绪后读取一次当前值。 */
+  /** 建立媒体快照和轻量时间轴监听，并在监听就绪后读取一次当前值。 */
   async function startSnapshotListener(): Promise<void> {
     try {
-      await registerListener(listenToCurrentMediaSnapshotChanges(applySnapshot))
+      await Promise.all([
+        registerListener(listenToCurrentMediaSnapshotChanges(applySnapshot)),
+        registerListener(listenToCurrentTimelineChanges(applyTimeline)),
+      ])
       const currentSnapshot = await getCurrentMediaSnapshot()
       if (isActive) applySnapshot(currentSnapshot)
     } catch {
