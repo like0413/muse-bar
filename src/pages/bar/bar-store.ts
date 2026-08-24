@@ -30,16 +30,58 @@ export const useBarStore = defineStore('bar', () => {
   const controlError = shallowRef('')
   const listeners: UnlistenFn[] = []
   let isActive = false
+  let isWaitingForChangedTrackTimeline = false
+  let timelineResetAtUnixMs: number | null = null
+
+  /** 判断两份快照是否属于不同歌曲；切换播放器时即使曲目信息相同也视为变化。 */
+  function hasTrackChanged(
+    currentSnapshot: MediaSnapshot | null,
+    nextSnapshot: MediaSnapshot | null,
+  ): boolean {
+    if (!currentSnapshot || !nextSnapshot) return false
+    return (
+      currentSnapshot.sessionKey !== nextSnapshot.sessionKey ||
+      currentSnapshot.title !== nextSnapshot.title ||
+      currentSnapshot.artist !== nextSnapshot.artist
+    )
+  }
 
   /** 应用 Rust 推送的统一媒体快照，并同步无会话提示。 */
   function applySnapshot(nextSnapshot: MediaSnapshot | null): void {
-    snapshot.value = nextSnapshot
+    const currentSnapshot = snapshot.value
+    const trackChanged = hasTrackChanged(currentSnapshot, nextSnapshot)
+    if (!nextSnapshot) {
+      isWaitingForChangedTrackTimeline = false
+      timelineResetAtUnixMs = null
+      snapshot.value = null
+    } else if (trackChanged) {
+      // 歌曲变化后只接受更新时刻不早于此处的时间轴，避免晚到的旧数据恢复进度。
+      isWaitingForChangedTrackTimeline = true
+      timelineResetAtUnixMs = Date.now()
+      snapshot.value = { ...nextSnapshot, timeline: null }
+    } else if (isWaitingForChangedTrackTimeline) {
+      // 完整快照无法证明时间轴的歌曲归属，等待期间始终保持归零。
+      snapshot.value = { ...nextSnapshot, timeline: null }
+    } else {
+      snapshot.value = nextSnapshot
+    }
     mediaStatus.value = nextSnapshot ? '' : '当前没有媒体会话'
   }
 
   /** 将轻量时间轴事件合并进当前快照，避免仅因进度变化重新传输封面等数据。 */
   function applyTimeline(timeline: CurrentTimeline | null): void {
     if (!snapshot.value) return
+    if (isWaitingForChangedTrackTimeline) {
+      if (
+        !timeline ||
+        timelineResetAtUnixMs === null ||
+        timeline.lastUpdatedAtUnixMs < timelineResetAtUnixMs
+      ) {
+        return
+      }
+      isWaitingForChangedTrackTimeline = false
+      timelineResetAtUnixMs = null
+    }
     snapshot.value = { ...snapshot.value, timeline }
   }
 
@@ -121,6 +163,8 @@ export const useBarStore = defineStore('bar', () => {
   /** 销毁 Bar 页面建立的全部监听器。 */
   function stop(): void {
     isActive = false
+    isWaitingForChangedTrackTimeline = false
+    timelineResetAtUnixMs = null
     for (const stopListener of listeners.splice(0)) stopListener()
   }
 
