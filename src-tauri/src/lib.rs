@@ -110,11 +110,14 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|_app, event| if let tauri::RunEvent::ExitRequested {
+    app.run(|_app, event| {
+        if let tauri::RunEvent::ExitRequested {
             code: None, api, ..
-        } = event {
-        // Explorer 重启会销毁其所有 Child。阻止“最后一个窗口消失”触发自然退出，
-        // 设置窗口可正常销毁；只有托盘“退出”的带退出码请求才真正结束进程。
-        api.prevent_exit();
+        } = event
+        {
+            // Explorer 重启会销毁其所有 Child。阻止“最后一个窗口消失”触发自然退出，
+            // 设置窗口可正常销毁；只有托盘“退出”的带退出码请求才真正结束进程。
+            api.prevent_exit();
+        }
     });
 }

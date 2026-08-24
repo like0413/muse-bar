@@ -1,8 +1,11 @@
 use tauri::AppHandle;
 
 /// 允许 Bar 前端复用 Rust 的唯一设置窗口创建流程。
+///
+/// 异步命令不会占用处理 WebView IPC 的主线程，避免 Child Bar 在创建另一个
+/// WebView 窗口时进入重入等待并失去鼠标响应。
 #[tauri::command]
-pub fn open_settings_window(app: AppHandle) -> Result<(), String> {
+pub async fn open_settings_window(app: AppHandle) -> Result<(), String> {
     crate::app_lifecycle::open_settings_window(&app)
 }
 
