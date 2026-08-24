@@ -12,9 +12,9 @@ use tauri::{Runtime, Window};
 use crate::platform::windows::{
     GetCurrentProcessId, GetParent, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId,
     IsWindow, ScreenToClient, SetLayeredWindowAttributes, SetParent, SetWindowLongPtrW,
-    SetWindowPos, COLORREF, GWL_EXSTYLE, GWL_STYLE, HWND, HWND_TOP, LWA_ALPHA, POINT, RECT,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, WS_CHILD, WS_CLIPCHILDREN,
-    WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT, WS_POPUP,
+    SetWindowPos, ShowWindow, COLORREF, GWL_EXSTYLE, GWL_STYLE, HWND, HWND_TOP, LWA_ALPHA, POINT,
+    RECT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, WS_CHILD,
+    WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 use crate::taskbar::{TaskbarIdentity, TaskbarRect};
@@ -64,6 +64,9 @@ pub(crate) fn attach_window<R: Runtime>(
         .hwnd()
         .map_err(|error| format!("无法取得 Bar 窗口句柄：{error}"))?;
 
+    // 已挂载到 Explorer 的跨进程 Child 无法可靠修改扩展样式。恢复显示前先解除
+    // 父子关系，使后续准备过程与首次挂载保持相同顺序，再由 attach_to_taskbar 挂回。
+    let _ = unsafe { SetParent(bar_handle, None) };
     prepare_window(bar_handle)?;
     let (width, height) =
         attach_to_taskbar(bar_window, bar_handle, taskbar, taskbar_rect, position)?;
@@ -72,6 +75,17 @@ pub(crate) fn attach_window<R: Runtime>(
         width: u32::try_from(width).map_err(|_| "Bar 宽度无法转换为物理像素".to_owned())?,
         height: u32::try_from(height).map_err(|_| "Bar 高度无法转换为物理像素".to_owned())?,
     })
+}
+
+/// 使用 Win32 隐藏任务栏 Child，避免 Tauri 顶层窗口抽象无法同步实际可见状态。
+pub(crate) fn hide_window<R: Runtime>(bar_window: &Window<R>) -> Result<(), String> {
+    let bar_handle = bar_window
+        .hwnd()
+        .map_err(|error| format!("无法取得 Bar 窗口句柄：{error}"))?;
+
+    // ShowWindow 返回的是调用前是否可见，不代表操作成功与否，因此只需显式消费结果。
+    let _ = unsafe { ShowWindow(bar_handle, SW_HIDE) };
+    Ok(())
 }
 
 /// 在保持 Child 高度不变的前提下，平滑调整原生宿主宽度与目标横坐标。

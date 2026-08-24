@@ -178,11 +178,9 @@ fn recover_bar_once(app: &AppHandle) -> Result<(), String> {
             .map_err(|error| format!("无法恢复 Bar WebView 自动尺寸同步：{error}"))?;
     }
 
-    // 托盘的临时隐藏状态跨 Explorer 重建保留，避免重建流程意外把 Bar 显示出来。
-    if !app.state::<AppState>().is_bar_visible() {
-        bar_window
-            .hide()
-            .map_err(|error| format!("无法恢复 Bar 的临时隐藏状态：{error}"))?;
+    // 用户临时隐藏和无媒体状态都会跨 Explorer 重建保留，避免恢复流程错误显示 Bar。
+    if !app.state::<AppState>().should_show_bar() {
+        child_host::hide_window(&bar_window)?;
     }
 
     Ok(())

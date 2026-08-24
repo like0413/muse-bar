@@ -319,7 +319,14 @@ impl SystemMediaManager {
                 .ok()
         });
         let sessions_changed_token = manager.as_ref().and_then(|manager| {
-            subscribe_to_sessions_changed(manager, app, media_activity_tracker.clone()).ok()
+            subscribe_to_sessions_changed(
+                manager,
+                app,
+                Arc::clone(&current_session_observation),
+                Arc::clone(&media_metadata_loader),
+                media_activity_tracker.clone(),
+            )
+            .ok()
         });
         let current_session_changed_token = manager.as_ref().and_then(|manager| {
             subscribe_to_current_session_changed(
@@ -453,22 +460,13 @@ impl SystemMediaManager {
             .media_activity_tracker
             .as_ref()
             .ok_or_else(|| "媒体活动跟踪器尚未初始化".to_owned())?;
-        let windows_current_session = manager.GetCurrentSession().ok();
-        let (selected_session, selection) =
-            activity_tracker.select_session(windows_current_session)?;
-
-        let selected_key = selected_session.as_ref().map(session_key);
-        let observed_key = self.observed_session()?.as_ref().map(session_key);
-        if selected_key != observed_key {
-            bind_media_session(
-                selected_session,
-                app,
-                &self.current_session_observation,
-                &self.media_metadata_loader,
-            )?;
-        }
-
-        Ok(selection)
+        select_and_bind_media_session(
+            manager,
+            activity_tracker,
+            app,
+            &self.current_session_observation,
+            &self.media_metadata_loader,
+        )
     }
 
     /// 对 Bar 当前真正观察的会话执行播放、暂停、切歌或进度跳转。
@@ -512,10 +510,35 @@ impl Drop for SystemMediaManager {
     }
 }
 
+/// 按最新活动记录选择观察会话，并在目标变化时完成事件解绑和重新绑定。
+fn select_and_bind_media_session<R: Runtime>(
+    manager: &GlobalSystemMediaTransportControlsSessionManager,
+    activity_tracker: &MediaActivityTracker,
+    app: &AppHandle<R>,
+    observation: &Arc<Mutex<CurrentSessionObservation>>,
+    media_metadata_loader: &Arc<MediaMetadataLoader>,
+) -> Result<Option<SelectedMediaSession>, String> {
+    let windows_current_session = manager.GetCurrentSession().ok();
+    let (selected_session, selection) = activity_tracker.select_session(windows_current_session)?;
+    let selected_key = selected_session.as_ref().map(session_key);
+    let observed_key = observation
+        .lock()
+        .map(|observation| observation.session.as_ref().map(session_key))
+        .map_err(|_| "当前媒体会话监听状态锁已损坏".to_owned())?;
+
+    if selected_key != observed_key {
+        bind_media_session(selected_session, app, observation, media_metadata_loader)?;
+    }
+
+    Ok(selection)
+}
+
 /// 注册会话列表变化事件，并将最新 Source App ID 广播给所有前端窗口。
 fn subscribe_to_sessions_changed<R: Runtime>(
     manager: &GlobalSystemMediaTransportControlsSessionManager,
     app: &AppHandle<R>,
+    observation: Arc<Mutex<CurrentSessionObservation>>,
+    media_metadata_loader: Arc<MediaMetadataLoader>,
     media_activity_tracker: Option<MediaActivityTracker>,
 ) -> Result<i64, String> {
     let app = app.clone();
@@ -534,6 +557,14 @@ fn subscribe_to_sessions_changed<R: Runtime>(
             if let Some(activity_tracker) = &media_activity_tracker {
                 if let Err(error) = activity_tracker.refresh_sessions(manager, &app) {
                     log::warn!("媒体会话列表变化后刷新活动监听失败：{error}");
+                } else if let Err(error) = select_and_bind_media_session(
+                    manager,
+                    activity_tracker,
+                    &app,
+                    &observation,
+                    &media_metadata_loader,
+                ) {
+                    log::warn!("媒体会话列表变化后重新选择观察会话失败：{error}");
                 }
             }
 

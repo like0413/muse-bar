@@ -42,6 +42,7 @@ pub(crate) enum MediaActivityReason {
 pub(crate) enum MediaSelectionReason {
     PlayingPreferred,
     LastPausedPreferred,
+    DetectedPreferred,
     WindowsCurrentFallback,
 }
 
@@ -342,17 +343,54 @@ impl MediaActivityTracker {
             }
         }
 
-        let selection = windows_current_session.as_ref().and_then(|session| {
-            let session_key = session_key(session);
-            let source_app_id = session.SourceAppUserModelId().ok()?.to_string();
-            Some(SelectedMediaSession {
-                session_key,
-                player_kind: identify_media_player(&source_app_id),
-                source_app_id,
-                reason: MediaSelectionReason::WindowsCurrentFallback,
-            })
+        // 音乐客户端刚启动但尚未播放时通常还不是 Windows CurrentSession，也没有
+        // 活动序号。只在没有播放/暂停首选项时使用已完成初始化的四家播放器会话，
+        // 让 Bar 能展示客户端保留的最后媒体；后续真实播放仍会覆盖这个回退选择。
+        let detected_preferred = observations.iter().rev().find_map(|observation| {
+            let record = state.records.get(&observation.session_key)?;
+            if record.player_kind == MediaPlayerKind::Other || record.title.is_none() {
+                return None;
+            }
+            Some((observation.session.clone(), observation.session_key, record))
         });
-        Ok((windows_current_session, selection))
+        if let Some((session, session_key, record)) = detected_preferred {
+            return Ok((
+                Some(session),
+                Some(SelectedMediaSession {
+                    session_key,
+                    source_app_id: record.source_app_id.clone(),
+                    player_kind: record.player_kind,
+                    reason: MediaSelectionReason::DetectedPreferred,
+                }),
+            ));
+        }
+
+        // SessionsChanged 与 CurrentSessionChanged 并不保证到达顺序。播放器刚退出时，
+        // Windows CurrentSession 可能短暂仍指向已移除对象，因此只接受最新会话列表
+        // 中仍有对应观察项的回退会话，避免 Bar 长期保留退出前的最后一首歌曲。
+        let fallback = windows_current_session.and_then(|session| {
+            let session_key = session_key(&session);
+            if !observations
+                .iter()
+                .any(|observation| observation.session_key == session_key)
+            {
+                return None;
+            }
+            let source_app_id = session.SourceAppUserModelId().ok()?.to_string();
+            Some((
+                session,
+                SelectedMediaSession {
+                    session_key,
+                    player_kind: identify_media_player(&source_app_id),
+                    source_app_id,
+                    reason: MediaSelectionReason::WindowsCurrentFallback,
+                },
+            ))
+        });
+        Ok(match fallback {
+            Some((session, selection)) => (Some(session), Some(selection)),
+            None => (None, None),
+        })
     }
 }
 

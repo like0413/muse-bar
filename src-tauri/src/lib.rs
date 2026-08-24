@@ -91,6 +91,7 @@ pub fn run() {
             commands::diagnostics::get_windows_version,
             commands::diagnostics::open_log_directory,
             commands::lifecycle::open_settings_window,
+            commands::lifecycle::set_bar_media_available,
             commands::lifecycle::show_ready_settings_window,
             commands::media::get_current_media_metadata,
             commands::media::get_current_media_snapshot,

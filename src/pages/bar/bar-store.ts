@@ -2,6 +2,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event'
 import { defineStore } from 'pinia'
 import { shallowRef } from 'vue'
 
+import { setBarMediaAvailable } from '@/lib/bar-window'
 import {
   getCurrentMediaSnapshot,
   listenToCurrentMediaSnapshotChanges,
@@ -17,6 +18,7 @@ import { getSettings, listenToSettingsChanges, type SettingsPayload } from '@/li
 const selectionReasonLabels: Record<MediaSelectionReason, string> = {
   playingPreferred: '最近播放的音乐播放器',
   lastPausedPreferred: '最近暂停的音乐播放器',
+  detectedPreferred: '已检测到的音乐播放器',
   windowsCurrentFallback: 'Windows 当前媒体',
 }
 
@@ -32,6 +34,8 @@ export const useBarStore = defineStore('bar', () => {
   let isActive = false
   let isWaitingForChangedTrackTimeline = false
   let timelineResetAtUnixMs: number | null = null
+  let lastReportedMediaAvailable: boolean | undefined
+  let mediaAvailabilityQueue = Promise.resolve()
 
   /** 判断两份快照是否属于不同歌曲；切换播放器时即使曲目信息相同也视为变化。 */
   function hasTrackChanged(
@@ -46,8 +50,23 @@ export const useBarStore = defineStore('bar', () => {
     )
   }
 
+  /** 串行通知 Rust 媒体可用状态，避免快速关闭和恢复会话时显隐命令乱序。 */
+  function reportMediaAvailability(available: boolean): void {
+    if (lastReportedMediaAvailable === available) return
+    lastReportedMediaAvailable = available
+
+    mediaAvailabilityQueue = mediaAvailabilityQueue
+      .then(() => setBarMediaAvailable(available))
+      .catch((error: unknown) => {
+        if (lastReportedMediaAvailable === available) lastReportedMediaAvailable = undefined
+        if (!isActive) return
+        barWidthDetails.value = `Bar 显隐同步失败：${error instanceof Error ? error.message : String(error)}`
+      })
+  }
+
   /** 应用 Rust 推送的统一媒体快照，并同步无会话提示。 */
   function applySnapshot(nextSnapshot: MediaSnapshot | null): void {
+    reportMediaAvailability(nextSnapshot !== null && nextSnapshot.playbackStatus !== 'closed')
     const currentSnapshot = snapshot.value
     const trackChanged = hasTrackChanged(currentSnapshot, nextSnapshot)
     if (!nextSnapshot) {
@@ -165,6 +184,7 @@ export const useBarStore = defineStore('bar', () => {
     isActive = false
     isWaitingForChangedTrackTimeline = false
     timelineResetAtUnixMs = null
+    lastReportedMediaAvailable = undefined
     for (const stopListener of listeners.splice(0)) stopListener()
   }
 

@@ -35,7 +35,8 @@ pub struct AppState {
     settings: RwLock<AppSettings>,
     bar_width_measurement: RwLock<Option<BarWidthMeasurement>>,
     bar_width_animation_revision: Arc<AtomicU64>,
-    bar_visible: AtomicBool,
+    bar_enabled_by_user: AtomicBool,
+    bar_media_available: AtomicBool,
 }
 
 impl AppState {
@@ -47,7 +48,8 @@ impl AppState {
             settings: RwLock::new(settings),
             bar_width_measurement: RwLock::new(None),
             bar_width_animation_revision: Arc::new(AtomicU64::new(0)),
-            bar_visible: AtomicBool::new(true),
+            bar_enabled_by_user: AtomicBool::new(true),
+            bar_media_available: AtomicBool::new(false),
         }
     }
 
@@ -127,13 +129,23 @@ impl AppState {
         (revision, Arc::clone(&self.bar_width_animation_revision))
     }
 
-    /// 返回用户在本次运行中选择的临时 Bar 显示状态。
-    pub fn is_bar_visible(&self) -> bool {
-        self.bar_visible.load(Ordering::Acquire)
+    /// 返回用户是否允许 Bar 在存在媒体时显示。
+    pub fn is_bar_enabled_by_user(&self) -> bool {
+        self.bar_enabled_by_user.load(Ordering::Acquire)
     }
 
-    /// 原子切换临时 Bar 显示状态，并返回切换后的值。
-    pub fn toggle_bar_visibility(&self) -> bool {
-        !self.bar_visible.fetch_xor(true, Ordering::AcqRel)
+    /// 原子切换用户临时显隐选择，并返回切换后的启用状态。
+    pub fn toggle_bar_enabled_by_user(&self) -> bool {
+        !self.bar_enabled_by_user.fetch_xor(true, Ordering::AcqRel)
+    }
+
+    /// 保存当前是否存在可展示媒体，并返回修改前的值供失败回滚。
+    pub fn set_bar_media_available(&self, available: bool) -> bool {
+        self.bar_media_available.swap(available, Ordering::AcqRel)
+    }
+
+    /// 同时满足用户允许和媒体存在时，Bar 才应显示。
+    pub fn should_show_bar(&self) -> bool {
+        self.is_bar_enabled_by_user() && self.bar_media_available.load(Ordering::Acquire)
     }
 }

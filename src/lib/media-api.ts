@@ -54,6 +54,7 @@ export interface MediaSessionActivity {
 export type MediaSelectionReason =
   | 'playingPreferred'
   | 'lastPausedPreferred'
+  | 'detectedPreferred'
   | 'windowsCurrentFallback'
 
 export interface SelectedMediaSession {

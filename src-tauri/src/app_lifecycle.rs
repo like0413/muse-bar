@@ -121,30 +121,31 @@ pub(crate) fn show_ready_settings_window<R: Runtime>(app: &AppHandle<R>) -> Resu
 /// 切换本次运行中的 Bar 显示状态；该状态不会写入用户设置。
 fn toggle_bar<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
     let state = app.state::<AppState>();
-    let should_show = state.toggle_bar_visibility();
-    let operation_result = if let Some(window) = app.get_window(BAR_WINDOW_LABEL) {
-        if should_show {
-            window
-                .show()
-                .map_err(|error| format!("无法显示 Bar：{error}"))
-        } else {
-            window
-                .hide()
-                .map_err(|error| format!("无法隐藏 Bar：{error}"))
-        }
-    } else if should_show {
-        crate::explorer_monitor::request_recovery()
-    } else {
-        Ok(())
-    };
+    let is_enabled = state.toggle_bar_enabled_by_user();
+    let operation_result = synchronize_bar_visibility(app);
 
     if let Err(error) = operation_result {
         // 原生窗口操作失败时恢复状态，避免菜单状态与实际可见性永久相反。
-        state.toggle_bar_visibility();
+        state.toggle_bar_enabled_by_user();
         return Err(error);
     }
 
-    Ok(should_show)
+    Ok(is_enabled)
+}
+
+/// 根据用户选择和媒体可用状态，将 Bar 原生窗口同步到最终显隐结果。
+pub(crate) fn synchronize_bar_visibility<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let should_show = app.state::<AppState>().should_show_bar();
+    if should_show {
+        // Child 窗口隐藏后不能只调用 Tauri 的 show：那样不会重新校准窗口样式、
+        // 父子关系和任务栏客户区位置，WebView 看似恢复却可能失去鼠标命中。
+        // 统一复用 Explorer 恢复通道，由 Child 宿主完成挂载并原生显示窗口。
+        crate::explorer_monitor::request_recovery()?;
+    } else if let Some(window) = app.get_window(BAR_WINDOW_LABEL) {
+        crate::child_host::hide_window(&window)?;
+    }
+
+    Ok(())
 }
 
 /// 为托盘回调统一记录失败，不让一次菜单操作终止应用。
