@@ -132,8 +132,8 @@ Windows 人工验收：
 |    2 | 第二章：工程化与依赖治理        | 已完成 | 第一章完成   | 已进入第三章       |
 |    3 | 第三章：安全                    | 已完成 | 第二章完成   | 已进入第四章       |
 |    4 | 第四章：TypeScript 与运行时验证 | 已完成 | 第三章完成   | 已进入第五章       |
-|    5 | 第五章：IPC 与 Tauri Command    | 待开始 | 第四章完成   | 审计命令和错误语义 |
-|    6 | 第六章：可靠性与恢复能力        | 未开始 | 第五章完成   | 等待第五章         |
+|    5 | 第五章：IPC 与 Tauri Command    | 已完成 | 第四章完成   | 已进入第六章       |
+|    6 | 第六章：可靠性与恢复能力        | 待开始 | 第五章完成   | 审计恢复与降级路径 |
 |    7 | 第七章：测试体系                | 未开始 | 第六章完成   | 等待第六章         |
 |    8 | 第八章：架构与 SOLID            | 未开始 | 第七章完成   | 等待第七章         |
 |    9 | 第九章：Rust 模块和代码质量     | 未开始 | 第八章完成   | 等待第八章         |
@@ -391,76 +391,91 @@ Tauri 应用目录 API 生成，因此本章不修改现有路径逻辑。
 
 ## 23. Command 薄边界
 
-逐个检查全部 command：
+状态：`Confirmed`，已完成。
 
-- 输入校验。
-- 窗口权限。
-- 调用应用逻辑。
-- 映射统一错误。
-- 返回 DTO。
+已逐一核对全部 Command、`generate_handler!` 注册项和前端 `invoke`：
 
-Command 不应承担：
+- 媒体选择、缓存、Win32 枚举和设置文件读写均已位于领域模块或共享状态中。
+- `report_bar_content_width` 原先直接编排任务栏读取、宽度策略和窗口动画，现已下沉至
+  `bar_layout::apply_content_width`，Command 只负责接收 Tauri 参数并转发。
+- `update_settings` 原先直接编排启动项同步、持久化、回滚、广播和跨显示器恢复，现已下沉至
+  `settings_update::apply`，事务语义保持不变。
+- 诊断 Command 保留 DTO 转换；它属于 IPC 边界职责，没有为了追求一行函数继续拆分。
 
-- 大段媒体选择算法。
-- 文件持久化细节。
-- Win32 枚举算法。
-- 复杂缓存管理。
+清理后保留 18 个实际使用的 Command。AppManifest、`generate_handler!` 和前端调用名称完全一致。
 
 ## 24. IPC 调用频率
 
-重点测量：
+状态：`Verify → Keep`。
 
-- Bar 宽度报告。
-- 媒体时间轴更新。
-- 设置变化。
-- 诊断刷新。
-- 媒体控制点击。
+调用路径审计未发现每帧、循环内 N 次或逐字段 invoke：
 
-避免：
+- Bar 宽度变化由 `requestAnimationFrame` 合并，并忽略小于 0.5px 的重复值。
+- 时间轴使用不含封面数据的轻量事件，统一快照只在媒体状态变化时更新。
+- 设置页把局部补丁合并为一次完整设置更新，Rust 返回规范化结果。
+- 诊断只在设置页启动或用户刷新时读取，并行合并相关请求。
+- 媒体控制只在用户点击时调用，并阻止同一会话的并发操作。
 
-- 每帧 invoke。
-- 每个字段一次 invoke。
-- 循环中 N 次 invoke。
-- 同一状态既推完整快照又重复推多个零散事件。
+当前没有性能故障或调用频率指标支持改用 Channel、额外节流或批处理，保持现状。
 
 ## 25. Event 体系整理
 
-当前存在统一快照事件和多个细粒度历史事件，应审查：
+状态：`Confirmed`，已完成。
 
-- 哪些仍被实际消费。
-- 哪些只是诊断用途。
-- 哪些可以删除。
-- 哪些应限制到指定窗口。
-- 高频事件是否需要节流或合并。
+已删除没有任何前端监听者的 4 类历史广播：
+
+- `media-sessions-changed`
+- `current-media-metadata-changed`
+- `current-playback-status-changed`
+- `current-playback-capabilities-changed`
+
+同时删除对应前端监听封装。会话身份事件仅供设置诊断使用，已从应用全局广播改为只发送给
+`settings` 窗口。
+
+保留的事件均有明确消费者：统一媒体快照、轻量时间轴、媒体会话身份、媒体活动记录和设置变化。
+时间轴刻意独立于统一快照，避免进度变化时重复传输封面和完整元数据，不再合并。
 
 ## 26. IPC 错误模型
 
-统一错误结构：
+状态：`Verify → Keep / Conditional`。
 
-```
-code
-message
-recoverable
-operation
-context
-```
+媒体控制已经返回包含 `action`、稳定 `code` 和 `message` 的结构化错误，因为该操作确实存在
+`noSession`、`unsupported`、`rejected` 和 `windowsApi` 等可区分语义。其余 Command 的错误目前
+只用于向用户显示或写入诊断，没有依据错误类别执行重试、跳转或按钮状态决策。
 
-前端根据 `code` 决定：
-
-- 重试。
-- 显示设置入口。
-- 禁用按钮。
-- 回退为空状态。
-- 记录诊断日志。
+因此不把所有底层 `String` 机械包装成字段内容相同的通用对象，也不额外引入 `thiserror` 层级。
+触发条件是某个消费者需要根据错误类别采取不同恢复动作；届时在对应领域定义稳定错误 enum，
+而不是建立无法表达领域语义的单一“大而全”错误码表。
 
 ## 27. Command 访问范围
 
-Bar 和 Settings capability 已按窗口分离，但自定义 command 仍需按用途审查：
+状态：`Confirmed`，已完成。
 
-- Bar 是否应该调用诊断 command。
-- Settings 是否应该调用媒体控制 command。
-- 是否需要为高权限操作建立专门 permission。
-- 是否能使用面向窗口的 event，而非全局广播。
+Tauri 默认允许所有应用窗口调用 `invoke_handler` 注册的自定义 Command。现已在 `build.rs` 使用
+`AppManifest::commands` 为 18 个应用命令生成独立的 `allow-*` 权限，并按窗口写入 capability：
+
+- Bar 可调用宽度和显隐、媒体控制/快照、会话选择、读取设置以及打开设置窗口。
+- Settings 可调用设置读写、运行信息、任务栏诊断、媒体诊断快照以及显示设置窗口。
+- Bar 不再具备诊断、设置写入或日志目录权限；Settings 不具备媒体控制、Bar 窗口操作或打开新设置
+  窗口的权限。
+
+已生成的 Tauri ACL manifest 和 capability schema 能解析全部权限标识，没有未授权注册项。
+
+## 本章验收
+
+2026-08-25 已完成累计验证：
+
+- `vp install`：通过，依赖已是最新状态。
+- `vp run type-check`：通过，删除旧前端 IPC 封装后无调用缺口。
+- `vp check`：通过，格式、lint 和 TypeScript 检查无错误。
+- `vp build`：通过，前端生产构建成功。
+- `cargo check --manifest-path src-tauri/Cargo.toml --locked`：通过。
+- `cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings`：通过。
+- `vp exec tauri dev`：Bar 正常启动，无 ACL 拒绝、Command not found 或事件权限错误。
+- 再次启动应用触发单实例设置窗口：第二实例以 0 退出，Settings 首次读取无权限错误。
+
+运行验证后已停止本章启动的 Tauri、Vite 和 Muse Bar 进程；端口 1420 空闲。前端测试仍按第七章
+建立测试体系后执行。
 
 ---
 

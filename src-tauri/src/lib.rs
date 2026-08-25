@@ -6,6 +6,9 @@ mod app_lifecycle;
 /// Windows 当前用户开机启动项同步。
 mod autostart;
 
+/// Bar 内容宽度到原生任务栏窗口尺寸的应用编排。
+mod bar_layout;
+
 /// 任务栏 Child 窗口的样式、挂载与位置维护。
 mod child_host;
 
@@ -29,6 +32,9 @@ mod system_media;
 
 /// 用户设置的数据结构与默认值。
 mod settings;
+
+/// 设置更新涉及的启动项、持久化和事件广播事务。
+mod settings_update;
 
 /// 应用级共享状态及其只读访问接口。
 mod state;
@@ -87,22 +93,15 @@ pub fn run() {
             commands::diagnostics::get_taskbar_dpi,
             commands::diagnostics::get_taskbar_identity,
             commands::diagnostics::get_taskbar_occupied_regions,
-            commands::diagnostics::get_taskbar_rect,
             commands::diagnostics::get_windows_version,
             commands::diagnostics::open_log_directory,
             commands::lifecycle::open_settings_window,
             commands::lifecycle::set_bar_media_available,
             commands::lifecycle::show_ready_settings_window,
-            commands::media::get_current_media_metadata,
             commands::media::get_current_media_snapshot,
-            commands::media::get_current_playback_capabilities,
-            commands::media::get_current_playback_status,
-            commands::media::get_current_timeline,
             commands::media::control_media,
-            commands::media::get_media_session_source_app_ids,
             commands::media::get_media_session_identities,
             commands::media::get_media_session_activities,
-            commands::media::is_system_media_manager_initialized,
             commands::media::refresh_selected_media_session,
             commands::runtime::get_runtime_info,
             commands::settings::get_settings,

@@ -178,15 +178,6 @@ pub fn get_taskbar_identity() -> Result<TaskbarIdentityDiagnostic, String> {
     })
 }
 
-/// 查找主任务栏并返回它在屏幕坐标系中的物理像素矩形。
-#[tauri::command]
-pub fn get_taskbar_rect() -> Result<TaskbarRectDiagnostic, String> {
-    let taskbar = crate::taskbar::find_main_taskbar()?;
-    let rect = crate::taskbar::read_taskbar_rect(&taskbar)?;
-
-    Ok(TaskbarRectDiagnostic::from_taskbar_rect(&rect))
-}
-
 /// 返回任务栏窗口 DPI 以及物理像素到逻辑像素的换算结果。
 #[tauri::command]
 pub fn get_taskbar_dpi() -> Result<TaskbarDpiDiagnostic, String> {

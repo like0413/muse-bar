@@ -3,5 +3,21 @@
   "identifier": "default",
   "description": "Default permissions for the settings window",
   "windows": ["settings"],
-  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-get-current-media-snapshot",
+    "allow-get-media-session-activities",
+    "allow-get-media-session-identities",
+    "allow-get-runtime-info",
+    "allow-get-settings",
+    "allow-get-taskbar-dpi",
+    "allow-get-taskbar-identity",
+    "allow-get-taskbar-monitors",
+    "allow-get-taskbar-occupied-regions",
+    "allow-get-windows-version",
+    "allow-open-log-directory",
+    "allow-show-ready-settings-window",
+    "allow-update-settings"
+  ]
 }

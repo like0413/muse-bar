@@ -30,11 +30,7 @@ use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTIT
 
 const TICKS_PER_MILLISECOND: i64 = 10_000;
 const WINDOWS_TO_UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
-const MEDIA_SESSIONS_CHANGED_EVENT: &str = "media-sessions-changed";
 const MEDIA_SESSION_IDENTITIES_CHANGED_EVENT: &str = "media-session-identities-changed";
-const CURRENT_MEDIA_METADATA_CHANGED_EVENT: &str = "current-media-metadata-changed";
-const CURRENT_PLAYBACK_STATUS_CHANGED_EVENT: &str = "current-playback-status-changed";
-const CURRENT_PLAYBACK_CAPABILITIES_CHANGED_EVENT: &str = "current-playback-capabilities-changed";
 const CURRENT_TIMELINE_CHANGED_EVENT: &str = "current-timeline-changed";
 const CURRENT_MEDIA_SNAPSHOT_CHANGED_EVENT: &str = "current-media-snapshot-changed";
 const MAX_ARTWORK_BYTES: u64 = 4 * 1024 * 1024;
@@ -260,22 +256,11 @@ fn run_media_metadata_worker<R: Runtime>(
                     continue;
                 }
 
-                if let Err(error) =
-                    app.emit(CURRENT_MEDIA_METADATA_CHANGED_EVENT, Some(metadata.clone()))
-                {
-                    log::warn!("无法广播当前媒体会话元数据：{error}");
-                }
                 emit_media_snapshot(&request.session, &app, metadata);
             }
             Err(error) => {
                 if let Ok(mut cached) = cached.lock() {
                     *cached = None;
-                }
-                if let Err(emit_error) = app.emit(
-                    CURRENT_MEDIA_METADATA_CHANGED_EVENT,
-                    Option::<CurrentMediaMetadata>::None,
-                ) {
-                    log::warn!("无法广播媒体元数据读取失败：{emit_error}");
                 }
                 if let Err(emit_error) = app.emit(
                     CURRENT_MEDIA_SNAPSHOT_CHANGED_EVENT,
@@ -365,21 +350,6 @@ impl SystemMediaManager {
         }
     }
 
-    /// 返回本次进程是否已经取得可供后续会话查询使用的管理器实例。
-    pub(crate) fn is_initialized(&self) -> bool {
-        self.manager.is_some()
-    }
-
-    /// 枚举当前系统媒体会话，并按 Windows 返回顺序提取 Source App ID。
-    pub(crate) fn source_app_ids(&self) -> Result<Vec<String>, String> {
-        let manager = self
-            .manager
-            .as_ref()
-            .ok_or_else(|| "Windows 全局系统媒体管理器尚未初始化".to_owned())?;
-
-        collect_source_app_ids(manager)
-    }
-
     /// 枚举全部媒体会话，并返回 Muse Bar 对每个来源的播放器分类。
     pub(crate) fn session_identities(&self) -> Result<Vec<MediaSessionIdentity>, String> {
         let manager = self
@@ -396,40 +366,6 @@ impl SystemMediaManager {
             .as_ref()
             .ok_or_else(|| "媒体活动跟踪器尚未初始化".to_owned())?
             .activities()
-    }
-
-    /// 从内存缓存读取标题、歌手和封面，不在 Tauri 命令线程中等待 WinRT。
-    pub(crate) fn current_media_metadata(&self) -> Result<Option<CurrentMediaMetadata>, String> {
-        self.media_metadata_loader.cached()
-    }
-
-    /// 读取 Windows 当前会话的播放状态；没有当前会话时返回空值。
-    pub(crate) fn current_playback_status(&self) -> Result<Option<CurrentPlaybackStatus>, String> {
-        let Some(session) = self.observed_session()? else {
-            return Ok(None);
-        };
-
-        read_playback_status(&session).map(Some)
-    }
-
-    /// 读取 Windows 当前会话声明的控制能力；没有当前会话时返回空值。
-    pub(crate) fn current_playback_capabilities(
-        &self,
-    ) -> Result<Option<CurrentPlaybackCapabilities>, String> {
-        let Some(session) = self.observed_session()? else {
-            return Ok(None);
-        };
-
-        read_playback_capabilities(&session).map(Some)
-    }
-
-    /// 读取 Windows 当前会话的有效时间轴；没有会话或时间轴无效时返回空值。
-    pub(crate) fn current_timeline(&self) -> Result<Option<CurrentTimeline>, String> {
-        let Some(session) = self.observed_session()? else {
-            return Ok(None);
-        };
-
-        read_timeline(&session)
     }
 
     /// 将当前会话与后台缓存的元数据组合为统一快照。
@@ -571,15 +507,11 @@ fn subscribe_to_sessions_changed<R: Runtime>(
 
             match collect_session_identities(manager) {
                 Ok(identities) => {
-                    let source_app_ids = identities
-                        .iter()
-                        .map(|identity| identity.source_app_id.clone())
-                        .collect::<Vec<_>>();
-                    if let Err(error) = app.emit(MEDIA_SESSIONS_CHANGED_EVENT, source_app_ids) {
-                        log::warn!("无法广播系统媒体会话列表变化：{error}");
-                    }
-                    if let Err(error) = app.emit(MEDIA_SESSION_IDENTITIES_CHANGED_EVENT, identities)
-                    {
+                    if let Err(error) = app.emit_to(
+                        "settings",
+                        MEDIA_SESSION_IDENTITIES_CHANGED_EVENT,
+                        identities,
+                    ) {
                         log::warn!("无法广播媒体会话身份变化：{error}");
                     }
                 }
@@ -662,21 +594,6 @@ fn bind_media_session<R: Runtime>(
     let Some(session) = current_session else {
         media_metadata_loader.clear()?;
         app.emit(
-            CURRENT_MEDIA_METADATA_CHANGED_EVENT,
-            Option::<CurrentMediaMetadata>::None,
-        )
-        .map_err(|error| format!("无法广播当前媒体会话已清空：{error}"))?;
-        app.emit(
-            CURRENT_PLAYBACK_STATUS_CHANGED_EVENT,
-            Option::<CurrentPlaybackStatus>::None,
-        )
-        .map_err(|error| format!("无法广播当前播放状态已清空：{error}"))?;
-        app.emit(
-            CURRENT_PLAYBACK_CAPABILITIES_CHANGED_EVENT,
-            Option::<CurrentPlaybackCapabilities>::None,
-        )
-        .map_err(|error| format!("无法广播当前控制能力已清空：{error}"))?;
-        app.emit(
             CURRENT_TIMELINE_CHANGED_EVENT,
             Option::<CurrentTimeline>::None,
         )
@@ -720,7 +637,6 @@ fn bind_media_session<R: Runtime>(
                 return Ok(());
             };
 
-            emit_playback_info(session, &playback_app);
             emit_timeline(session, &playback_app);
             emit_media_snapshot_from_cache(session, &playback_app, &playback_metadata_loader);
             Ok(())
@@ -765,7 +681,6 @@ fn bind_media_session<R: Runtime>(
     drop(observation);
 
     media_metadata_loader.request(&session);
-    emit_playback_info(&session, app);
     emit_timeline(&session, app);
     Ok(())
 }
@@ -801,41 +716,6 @@ fn clear_current_session_observation(observation: &mut CurrentSessionObservation
     observation.media_properties_changed_token = None;
     observation.playback_info_changed_token = None;
     observation.timeline_properties_changed_token = None;
-}
-
-/// 一次读取当前播放信息，并分别广播状态和控制能力。
-fn emit_playback_info<R: Runtime>(
-    session: &GlobalSystemMediaTransportControlsSession,
-    app: &AppHandle<R>,
-) {
-    let playback_info = match session.GetPlaybackInfo() {
-        Ok(playback_info) => playback_info,
-        Err(error) => {
-            log::warn!("无法在播放信息变化后读取当前会话：{error}");
-            return;
-        }
-    };
-
-    match playback_status_from_info(&playback_info) {
-        Ok(status) => {
-            if let Err(error) = app.emit(CURRENT_PLAYBACK_STATUS_CHANGED_EVENT, Some(status)) {
-                log::warn!("无法广播当前媒体会话播放状态：{error}");
-            }
-        }
-        Err(error) => log::warn!("无法在播放信息变化后读取状态：{error}"),
-    }
-
-    match playback_capabilities_from_info(&playback_info) {
-        Ok(capabilities) => {
-            if let Err(error) = app.emit(
-                CURRENT_PLAYBACK_CAPABILITIES_CHANGED_EVENT,
-                Some(capabilities),
-            ) {
-                log::warn!("无法广播当前媒体会话控制能力：{error}");
-            }
-        }
-        Err(error) => log::warn!("无法在播放信息变化后读取控制能力：{error}"),
-    }
 }
 
 /// 读取当前会话时间轴并广播；无效时间轴使用空值表示。
@@ -1190,17 +1070,6 @@ fn detect_artwork_content_type(bytes: &[u8], reported_content_type: &str) -> Str
     }
 }
 
-/// 读取 WinRT 播放信息，并转换为可稳定序列化的应用状态。
-fn read_playback_status(
-    session: &GlobalSystemMediaTransportControlsSession,
-) -> Result<CurrentPlaybackStatus, String> {
-    let playback_info = session
-        .GetPlaybackInfo()
-        .map_err(|error| format!("无法读取当前会话播放信息：{error}"))?;
-
-    playback_status_from_info(&playback_info)
-}
-
 /// 从已取得的播放信息中转换应用播放状态。
 fn playback_status_from_info(
     playback_info: &GlobalSystemMediaTransportControlsSessionPlaybackInfo,
@@ -1226,17 +1095,6 @@ fn playback_status_from_info(
     };
 
     Ok(status)
-}
-
-/// 读取当前会话播放信息中的全部控制能力。
-fn read_playback_capabilities(
-    session: &GlobalSystemMediaTransportControlsSession,
-) -> Result<CurrentPlaybackCapabilities, String> {
-    let playback_info = session
-        .GetPlaybackInfo()
-        .map_err(|error| format!("无法读取当前会话播放信息：{error}"))?;
-
-    playback_capabilities_from_info(&playback_info)
 }
 
 /// 从已取得的播放信息中读取播放、暂停、切歌和 seek 能力。
@@ -1329,18 +1187,6 @@ fn read_timeline(
 /// 将 Windows TimeSpan 使用的 100ns ticks 转换为毫秒。
 fn ticks_to_milliseconds(ticks: i64) -> i64 {
     ticks / TICKS_PER_MILLISECOND
-}
-
-/// 从指定管理器读取全部会话，并提取 Source App ID。
-fn collect_source_app_ids(
-    manager: &GlobalSystemMediaTransportControlsSessionManager,
-) -> Result<Vec<String>, String> {
-    collect_session_identities(manager).map(|identities| {
-        identities
-            .into_iter()
-            .map(|identity| identity.source_app_id)
-            .collect()
-    })
 }
 
 /// 从指定管理器读取全部会话，并为每个 Source App ID 添加播放器类别。
