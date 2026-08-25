@@ -3,5 +3,5 @@
   "identifier": "bar",
   "description": "Default permissions for the taskbar Bar window",
   "windows": ["bar"],
-  "permissions": ["core:default"]
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
 }
