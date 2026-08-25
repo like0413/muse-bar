@@ -11,11 +11,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Runtime};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
-const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 9;
-const WIDTH_SETTINGS_SCHEMA_VERSION: u32 = 7;
-const DEFAULT_MIN_WIDTH: u32 = 240;
+const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 11;
 const DEFAULT_MAX_WIDTH: u32 = 380;
-const ALLOWED_MIN_WIDTH: u32 = 200;
+const MINIMUM_ALLOWED_MAX_WIDTH: u32 = 200;
 const ALLOWED_MAX_WIDTH: u32 = 520;
 const DEFAULT_TITLE_SCROLL_SPEED: u32 = 30;
 const MINIMUM_TITLE_SCROLL_SPEED: u32 = 10;
@@ -39,6 +37,15 @@ pub enum WindowMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskbarPosition {
+    Left,
+    #[serde(alias = "center")]
+    Right,
+}
+
+/// 歌词文本在可用内容区域中的水平对齐方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LyricsAlignment {
     Left,
     Center,
     Right,
@@ -102,7 +109,6 @@ pub struct AppSettings {
     pub window_mode: WindowMode,
     pub position: TaskbarPosition,
     pub target_monitor: String,
-    pub min_width: u32,
     pub max_width: u32,
     pub manual_offset: i32,
     pub show_controls: bool,
@@ -115,6 +121,8 @@ pub struct AppSettings {
     pub title_scroll_enabled: bool,
     pub title_scroll_speed: u32,
     pub title_scroll_mode: TitleScrollMode,
+    pub lyrics_enabled: bool,
+    pub lyrics_alignment: LyricsAlignment,
     pub launch_on_startup: bool,
 }
 
@@ -126,7 +134,6 @@ impl Default for AppSettings {
             window_mode: WindowMode::Auto,
             position: TaskbarPosition::Right,
             target_monitor: DEFAULT_TARGET_MONITOR.to_owned(),
-            min_width: DEFAULT_MIN_WIDTH,
             max_width: DEFAULT_MAX_WIDTH,
             manual_offset: 0,
             show_controls: true,
@@ -139,6 +146,8 @@ impl Default for AppSettings {
             title_scroll_enabled: true,
             title_scroll_speed: DEFAULT_TITLE_SCROLL_SPEED,
             title_scroll_mode: TitleScrollMode::Continuous,
+            lyrics_enabled: false,
+            lyrics_alignment: LyricsAlignment::Center,
             launch_on_startup: false,
         }
     }
@@ -158,12 +167,12 @@ impl AppSettings {
         match serde_json::from_str::<Self>(&contents) {
             Ok(mut settings) => {
                 let migrated = settings.migrate();
-                let width_range_normalized = settings.normalize_width_range();
+                let maximum_width_normalized = settings.normalize_maximum_width();
                 let title_scroll_speed_normalized = settings.normalize_title_scroll_speed();
                 let positioning_normalized = settings.normalize_positioning();
                 let progress_color_normalized = settings.normalize_custom_progress_color();
                 if migrated
-                    || width_range_normalized
+                    || maximum_width_normalized
                     || title_scroll_speed_normalized
                     || positioning_normalized
                     || progress_color_normalized
@@ -207,21 +216,16 @@ impl AppSettings {
             return false;
         }
 
-        // 第 7 版曾调整产品宽度约束；后续无关字段升级不能再次覆盖用户已经保存的宽度。
-        if self.schema_version < WIDTH_SETTINGS_SCHEMA_VERSION {
-            self.min_width = DEFAULT_MIN_WIDTH;
-            self.max_width = DEFAULT_MAX_WIDTH;
-        }
         self.schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
         true
     }
 
-    /// 将宽度限制在产品范围内，并保证最小值不大于最大值。
-    pub(crate) fn normalize_width_range(&mut self) -> bool {
-        let minimum_width = self.min_width.clamp(ALLOWED_MIN_WIDTH, ALLOWED_MAX_WIDTH);
-        let maximum_width = self.max_width.clamp(minimum_width, ALLOWED_MAX_WIDTH);
-        let changed = self.min_width != minimum_width || self.max_width != maximum_width;
-        self.min_width = minimum_width;
+    /// 将普通模式的最大宽度限制在设置页允许的产品范围内。
+    pub(crate) fn normalize_maximum_width(&mut self) -> bool {
+        let maximum_width = self
+            .max_width
+            .clamp(MINIMUM_ALLOWED_MAX_WIDTH, ALLOWED_MAX_WIDTH);
+        let changed = self.max_width != maximum_width;
         self.max_width = maximum_width;
         changed
     }

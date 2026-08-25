@@ -1,12 +1,22 @@
 <script setup lang="ts">
+import { AnimatePresence, motion } from 'motion-v'
 import { storeToRefs } from 'pinia'
-import { computed, nextTick, onBeforeUnmount, onMounted, useTemplateRef, watch } from 'vue'
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  shallowRef,
+  useTemplateRef,
+  watch,
+} from 'vue'
 
 import { reportBarContentWidth } from '@/lib/bar-layout-api'
-import { readControlPosition, readShowControls } from '@/lib/settings-api'
+import { readControlPosition, readLyricsEnabled, readShowControls } from '@/lib/settings-api'
 
 import { useBarStore } from '../bar-store'
 import BarArtwork from './BarArtwork.vue'
+import BarLyricsContent from './BarLyricsContent.vue'
 import BarMediaControls from './BarMediaControls.vue'
 import BarProgress from './BarProgress.vue'
 import BarTrackInfo from './BarTrackInfo.vue'
@@ -17,12 +27,22 @@ const emit = defineEmits<{
 
 const barStore = useBarStore()
 const { settings, snapshot } = storeToRefs(barStore)
-const showControls = computed(() => readShowControls(settings.value))
+const isHovered = shallowRef(false)
+const lyricsEnabled = computed(() => readLyricsEnabled(settings.value))
+const activeContent = computed(() => (lyricsEnabled.value && !isHovered.value ? 'lyrics' : 'media'))
+const showMediaControls = computed(
+  () => activeContent.value === 'media' && readShowControls(settings.value),
+)
 const controlPosition = computed(() => readControlPosition(settings.value))
 const barPageElement = useTemplateRef<HTMLElement>('barPage')
 const barSurfaceElement = useTemplateRef<HTMLElement>('barSurface')
+const contentInitial = { opacity: 0, y: 2 }
+const contentVisible = { opacity: 1, y: 0 }
+const contentExit = { opacity: 0, y: -2 }
+const contentTransition = { duration: 0.18, ease: [0.22, 1, 0.36, 1] as const }
 let resizeObserver: ResizeObserver | undefined
 let measurementFrame: number | undefined
+let measurementRetryTimer: number | undefined
 let lastReportedNaturalWidth = 0
 let hasUnmounted = false
 
@@ -55,18 +75,24 @@ function measureTextContentWidth(element: HTMLElement | undefined): number {
 function measureNaturalWidth(): number | undefined {
   const page = barPageElement.value
   const surface = barSurfaceElement.value
-  const title = surface?.querySelector<HTMLElement>('[data-bar-title]')
-  const artwork = surface?.querySelector<HTMLElement>('[data-slot="avatar"]')
-  const controls = surface?.querySelector<HTMLElement>('[data-slot="button-group"]')
-  if (!page || !surface || !title || !artwork) return undefined
+  if (!page || !surface) return undefined
+  // 歌词模式始终保持任务栏可用区域宽度，固定哨兵值避免悬停切换触发原生缩放。
+  if (lyricsEnabled.value) return 1
 
-  const artist = surface.querySelector<HTMLElement>('[data-bar-artist]') ?? undefined
-  const surfaceStyle = window.getComputedStyle(surface)
-  const gap = readCssPixels(surfaceStyle.columnGap || surfaceStyle.gap)
+  const content = surface.querySelector<HTMLElement>('[data-bar-content]')
+  const title = content?.querySelector<HTMLElement>('[data-bar-title]')
+  const artwork = content?.querySelector<HTMLElement>('[data-slot="avatar"]')
+  const controls = content?.querySelector<HTMLElement>('[data-slot="button-group"]')
+  if (!content || !title || !artwork) return undefined
+
+  const artist = content.querySelector<HTMLElement>('[data-bar-artist]') ?? undefined
+  const contentStyle = window.getComputedStyle(content)
+  const gap = readCssPixels(contentStyle.columnGap || contentStyle.gap)
   const textWidth = Math.max(measureTextContentWidth(title), measureTextContentWidth(artist))
   return (
     readHorizontalInsets(page) +
     readHorizontalInsets(surface) +
+    readHorizontalInsets(content) +
     artwork.getBoundingClientRect().width +
     (controls?.getBoundingClientRect().width ?? 0) +
     textWidth +
@@ -88,9 +114,20 @@ function scheduleMeasurement(): void {
     lastReportedNaturalWidth = naturalWidth
     void reportBarContentWidth(naturalWidth)
       .then((measurement) => {
-        barStore.setBarWidthDetails(
-          `宽度：自然 ${measurement.naturalWidth.toFixed(1)}，目标 ${measurement.targetWidth}，范围 ${measurement.minimumWidth}–${measurement.maximumWidth}`,
-        )
+        const details =
+          measurement.mode === 'availableArea'
+            ? `宽度：歌词可用区域 ${measurement.targetWidth}`
+            : `宽度：自然 ${measurement.naturalWidth.toFixed(1)}，目标 ${measurement.targetWidth}，上限 ${measurement.maximumWidth}`
+        barStore.setBarWidthDetails(details)
+        if (!measurement.applied) {
+          // 切换目标显示器时原生 Child 需要先重新挂载，稍后再应用同一次宽度策略。
+          lastReportedNaturalWidth = 0
+          if (measurementRetryTimer !== undefined) window.clearTimeout(measurementRetryTimer)
+          measurementRetryTimer = window.setTimeout(() => {
+            measurementRetryTimer = undefined
+            scheduleMeasurement()
+          }, 400)
+        }
       })
       .catch((error: unknown) => {
         barStore.setBarWidthDetails(
@@ -129,6 +166,7 @@ onBeforeUnmount(() => {
   hasUnmounted = true
   resizeObserver?.disconnect()
   if (measurementFrame !== undefined) window.cancelAnimationFrame(measurementFrame)
+  if (measurementRetryTimer !== undefined) window.clearTimeout(measurementRetryTimer)
 })
 </script>
 
@@ -139,12 +177,30 @@ onBeforeUnmount(() => {
       aria-label="Muse Bar"
       class="bg-secondary text-secondary-foreground relative flex h-full w-full items-center gap-2 overflow-hidden border px-2 text-sm font-medium"
       @contextmenu.prevent="emit('openSettings')"
+      @mouseenter="isHovered = true"
+      @mouseleave="isHovered = false"
     >
       <BarProgress />
-      <BarMediaControls v-if="showControls && controlPosition === 'left'" />
-      <BarArtwork />
-      <BarTrackInfo />
-      <BarMediaControls v-if="showControls && controlPosition === 'right'" />
+      <div data-bar-content class="absolute inset-y-0 right-2 left-2 z-10 flex items-center gap-2">
+        <BarMediaControls v-if="showMediaControls && controlPosition === 'left'" />
+        <BarArtwork />
+        <div class="relative h-full min-w-0 flex-1">
+          <AnimatePresence :initial="false" mode="sync">
+            <motion.div
+              :key="activeContent"
+              class="absolute inset-0 flex items-center"
+              :initial="contentInitial"
+              :animate="contentVisible"
+              :exit="contentExit"
+              :transition="contentTransition"
+            >
+              <BarLyricsContent v-if="activeContent === 'lyrics'" />
+              <BarTrackInfo v-else />
+            </motion.div>
+          </AnimatePresence>
+        </div>
+        <BarMediaControls v-if="showMediaControls && controlPosition === 'right'" />
+      </div>
     </section>
   </main>
 </template>

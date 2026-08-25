@@ -18,7 +18,7 @@ pub use ::windows::Win32::Graphics::Gdi::{
 /// 获取创建隐藏消息窗口所需的当前模块句柄。
 pub use ::windows::Win32::System::LibraryLoader::GetModuleHandleW;
 
-/// UI Automation 线程所需的 COM 初始化和对象创建 API。
+/// Explorer XAML 读取线程所需的 COM 初始化和对象创建 API。
 pub use ::windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
@@ -32,7 +32,7 @@ pub use ::windows::Win32::System::Threading::{
 /// 按指定窗口读取 DPI，避免错误使用全局系统 DPI。
 pub use ::windows::Win32::UI::HiDpi::GetDpiForWindow;
 
-/// 读取 Windows 11 任务栏可访问性树所需的 UI Automation 类型。
+/// 只读取 Explorer XAML 宿主所需的 UI Automation 类型。
 pub use ::windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, TreeScope_Descendants,
 };

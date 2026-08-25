@@ -10,20 +10,35 @@ use tauri::{AppHandle, Runtime};
 
 use crate::settings::AppSettings;
 
-/// Bar 前端最近一次上报的逻辑宽度及其设置边界计算结果。
+/// Bar 前端最近一次上报的逻辑宽度、目标宽度与采用的宽度策略。
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BarWidthMeasurement {
     natural_width: f64,
     target_width: u32,
-    minimum_width: u32,
     maximum_width: u32,
+    mode: BarWidthMode,
+    applied: bool,
+}
+
+/// 原生 Bar 本次采用的宽度计算策略。
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+enum BarWidthMode {
+    Content,
+    AvailableArea,
 }
 
 impl BarWidthMeasurement {
     /// 返回设置边界限制后的目标逻辑宽度。
     pub fn target_width(&self) -> u32 {
         self.target_width
+    }
+
+    /// 标记本次只完成了宽度计算，需等待 Bar 重新挂载后再次应用。
+    pub fn deferred(mut self) -> Self {
+        self.applied = false;
+        self
     }
 }
 
@@ -82,7 +97,7 @@ impl AppState {
             .write()
             .map_err(|_| "无法更新应用设置：设置状态锁已损坏".to_owned())?;
 
-        updated_settings.normalize_width_range();
+        updated_settings.normalize_maximum_width();
         updated_settings.normalize_title_scroll_speed();
         updated_settings.normalize_positioning();
         updated_settings.normalize_custom_progress_color();
@@ -94,10 +109,11 @@ impl AppState {
         Ok(updated_settings)
     }
 
-    /// 使用当前设置限制前端测得的自然宽度，并保存供后续原生窗口调整使用的目标值。
+    /// 保存前端自然宽度，并按普通内容或任务栏可用区域计算本次目标宽度。
     pub fn report_bar_content_width(
         &self,
         natural_width: f64,
+        available_area_width: Option<u32>,
     ) -> Result<BarWidthMeasurement, String> {
         if !natural_width.is_finite() || natural_width <= 0.0 || natural_width > f64::from(u32::MAX)
         {
@@ -105,14 +121,18 @@ impl AppState {
         }
 
         let settings = self.settings()?;
-        let minimum_width = settings.min_width;
         let maximum_width = settings.max_width;
         let rounded_width = natural_width.ceil() as u32;
+        let (target_width, mode) = match available_area_width {
+            Some(width) => (width.max(1), BarWidthMode::AvailableArea),
+            None => (rounded_width.min(maximum_width), BarWidthMode::Content),
+        };
         let measurement = BarWidthMeasurement {
             natural_width,
-            target_width: rounded_width.clamp(minimum_width, maximum_width),
-            minimum_width,
+            target_width,
             maximum_width,
+            mode,
+            applied: true,
         };
         let mut current_measurement = self
             .bar_width_measurement

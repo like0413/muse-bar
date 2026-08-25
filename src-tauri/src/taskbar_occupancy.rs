@@ -1,16 +1,50 @@
-use std::thread;
+use std::{
+    sync::{Mutex, OnceLock},
+    thread,
+};
 
 use crate::{
     platform::windows::{
         CUIAutomation, CoCreateInstance, CoInitializeEx, CoUninitialize, EnumChildWindows,
         GetClassNameW, GetWindowRect, GetWindowThreadProcessId, IUIAutomation, IsWindowVisible,
-        TreeScope_Descendants, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, LPARAM, RECT,
+        TreeScope_Descendants, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, HWND, LPARAM, RECT,
     },
     settings::TaskbarPosition,
     taskbar::{TaskbarIdentity, TaskbarRect},
 };
 
 const EDGE_COMPONENT_ZONE_DIVISOR: i32 = 3;
+const XAML_HOST_CLASS_NAME: &str = "Windows.UI.Composition.DesktopWindowContentBridge";
+
+static LAST_POSITIONING_REGIONS: OnceLock<Mutex<Option<CachedPositioningRegions>>> =
+    OnceLock::new();
+
+/// 最近一次完整的 Explorer XAML 布局，用于跨过开始菜单打开时的短暂数据缺失。
+#[derive(Debug, Clone)]
+struct CachedPositioningRegions {
+    taskbar_handle: u64,
+    taskbar_bounds: OccupiedRect,
+    regions: Vec<OccupiedRegion>,
+}
+
+/// 歌词模式可以占用的一段连续任务栏屏幕区域。
+#[derive(Debug, Clone, Copy)]
+pub struct AvailableSpan {
+    left: i32,
+    right: i32,
+}
+
+impl AvailableSpan {
+    /// 返回可用区域左边界的屏幕横坐标。
+    pub fn left(self) -> i32 {
+        self.left
+    }
+
+    /// 返回可用区域的物理像素宽度。
+    pub fn width(self) -> i32 {
+        self.right.saturating_sub(self.left).max(1)
+    }
+}
 
 /// 任务栏占用区域的检测来源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,41 +154,68 @@ impl TaskbarOccupancy {
     }
 }
 
-/// 优先使用 UI Automation 读取任务栏控件；失败或无结果时退回 Win32 子窗口枚举。
+/// 从 Explorer 的 XAML 宿主读取任务栏控件，失败时退回 Win32 子窗口。
 pub fn read_occupied_regions(
     taskbar: &TaskbarIdentity,
     taskbar_rect: &TaskbarRect,
 ) -> TaskbarOccupancy {
-    match read_ui_automation_regions(taskbar, taskbar_rect) {
-        Ok(regions) if !regions.is_empty() => TaskbarOccupancy {
+    match read_xaml_host_regions(taskbar, taskbar_rect) {
+        Ok(regions) if regions.iter().any(is_central_taskbar_button) => TaskbarOccupancy {
             source: OccupancySource::UiAutomation,
             regions,
             fallback_reason: None,
         },
-        result => {
-            let fallback_reason = match result {
-                Ok(_) => "UI Automation 没有返回可用的 Explorer 任务栏控件".to_owned(),
+        result => TaskbarOccupancy {
+            source: OccupancySource::Win32Fallback,
+            regions: read_win32_regions(taskbar, taskbar_rect),
+            fallback_reason: Some(match result {
+                Ok(_) => "Explorer XAML 宿主尚未返回完整的中央任务按钮".to_owned(),
                 Err(error) => error,
-            };
-            let regions = read_win32_regions(taskbar, taskbar_rect);
-            TaskbarOccupancy {
-                source: OccupancySource::Win32Fallback,
-                regions,
-                fallback_reason: Some(fallback_reason),
-            }
-        }
+            }),
+        },
     }
 }
 
-/// 为频繁定位返回轻量 Win32 区域，避免 UI Automation 在任务栏内反查 Muse Bar WebView。
+/// 为 Bar 定位返回任务栏控件；XAML 宿主与 Muse Bar 是兄弟窗口，不会进入其 WebView。
 pub fn read_positioning_regions(
     taskbar: &TaskbarIdentity,
     taskbar_rect: &TaskbarRect,
 ) -> Vec<OccupiedRegion> {
+    let taskbar_bounds = occupied_rect_from_taskbar(taskbar_rect);
+    let regions = read_xaml_host_regions(taskbar, taskbar_rect)
+        .ok()
+        .filter(|regions| regions.iter().any(is_central_taskbar_button));
+    if let Some(regions) = regions {
+        if let Ok(mut cached) = positioning_regions_cache().lock() {
+            *cached = Some(CachedPositioningRegions {
+                taskbar_handle: taskbar.handle_value(),
+                taskbar_bounds,
+                regions: regions.clone(),
+            });
+        }
+        return regions;
+    }
+
+    // 开始菜单打开、Explorer 正在动画或锁屏恢复时，XAML 树可能短暂不完整。
+    // 同一任务栏上继续使用最近的可信结果，避免退回粗略容器后覆盖开始按钮。
+    if let Ok(cached) = positioning_regions_cache().lock() {
+        if let Some(cached) = cached.as_ref().filter(|cached| {
+            cached.taskbar_handle == taskbar.handle_value()
+                && cached.taskbar_bounds == taskbar_bounds
+        }) {
+            return cached.regions.clone();
+        }
+    }
+
     read_win32_regions(taskbar, taskbar_rect)
 }
 
-/// 按简化规则计算 Bar 的屏幕横坐标：居中直接覆盖，左右只跟随对应边缘组件。
+/// 返回进程内唯一的任务栏定位缓存。
+fn positioning_regions_cache() -> &'static Mutex<Option<CachedPositioningRegions>> {
+    LAST_POSITIONING_REGIONS.get_or_init(|| Mutex::new(None))
+}
+
+/// 按简化规则计算 Bar 的屏幕横坐标：左右只跟随对应边缘组件。
 pub fn resolve_bar_screen_x(
     position: TaskbarPosition,
     taskbar_rect: &TaskbarRect,
@@ -170,19 +231,31 @@ pub fn resolve_bar_screen_x(
     let right_zone_start = taskbar_rect
         .right()
         .saturating_sub(taskbar_width / EDGE_COMPONENT_ZONE_DIVISOR);
+    let semantic_central_bounds = central_taskbar_bounds(regions);
 
     let target_x = match position {
-        TaskbarPosition::Center => taskbar_rect
-            .left()
-            .saturating_add((taskbar_width - bar_width) / 2),
         TaskbarPosition::Left => regions
             .iter()
+            .filter(|region| !is_central_taskbar_button(region))
+            .filter(|region| {
+                // 开始、搜索等中央按钮的内部 XAML 元素类名各不相同，
+                // 只要矩形仍与中央按钮组重叠，就不能作为左侧组件参与定位。
+                semantic_central_bounds.map_or(true, |(central_left, _)| {
+                    region.rect().right() <= central_left
+                })
+            })
             .filter(|region| region.rect().right() <= left_zone_end)
             .map(|region| region.rect().right())
             .max()
             .unwrap_or(taskbar_rect.left()),
         TaskbarPosition::Right => regions
             .iter()
+            .filter(|region| !is_central_taskbar_button(region))
+            .filter(|region| {
+                semantic_central_bounds.map_or(true, |(_, central_right)| {
+                    region.rect().left() >= central_right
+                })
+            })
             .filter(|region| region.rect().left() >= right_zone_start)
             .map(|region| region.rect().left())
             .min()
@@ -193,38 +266,185 @@ pub fn resolve_bar_screen_x(
     target_x.clamp(minimum_x, maximum_x.max(minimum_x))
 }
 
-/// 在独立 MTA 线程中执行 UI Automation，避免与 Tauri 主线程的 COM 模型冲突。
-fn read_ui_automation_regions(
+/// 按 Bar 位置返回歌词模式可占满的任务栏连续空白区域。
+pub fn resolve_available_span(
+    position: TaskbarPosition,
+    taskbar_rect: &TaskbarRect,
+    regions: &[OccupiedRegion],
+) -> AvailableSpan {
+    let taskbar_width = taskbar_rect.width();
+    let left_zone_end = taskbar_rect
+        .left()
+        .saturating_add(taskbar_width / EDGE_COMPONENT_ZONE_DIVISOR);
+    let right_zone_start = taskbar_rect
+        .right()
+        .saturating_sub(taskbar_width / EDGE_COMPONENT_ZONE_DIVISOR);
+    let center_x = taskbar_rect.left().saturating_add(taskbar_width / 2);
+
+    let semantic_central_bounds = central_taskbar_bounds(regions);
+    let left_edge = regions
+        .iter()
+        .filter(|region| !is_central_taskbar_button(region))
+        .filter(|region| {
+            // 搜索按钮等 XAML 控件会暴露 AnimatedVisualPlayer 之类的内部子元素。
+            // 这些子元素虽然类名不同，却仍位于中央按钮组内，不能误判为左侧组件。
+            semantic_central_bounds.map_or(true, |(central_left, _)| {
+                region.rect().right() <= central_left
+            })
+        })
+        .filter(|region| region.rect().right() <= left_zone_end)
+        .map(|region| region.rect().right())
+        .max()
+        .unwrap_or(taskbar_rect.left());
+    let right_edge = regions
+        .iter()
+        .filter(|region| !is_central_taskbar_button(region))
+        .filter(|region| {
+            semantic_central_bounds.map_or(true, |(_, central_right)| {
+                region.rect().left() >= central_right
+            })
+        })
+        .filter(|region| region.rect().left() >= right_zone_start)
+        .map(|region| region.rect().left())
+        .min()
+        .unwrap_or(taskbar_rect.right());
+
+    // 过滤掉横跨大部分任务栏的框架容器，只保留中部按钮组及其实际子项。
+    let (central_left, central_right) = regions
+        .iter()
+        .filter_map(|region| {
+            let rect = region.rect();
+            (rect.width() < taskbar_width * 2 / 3
+                && rect.right() > left_zone_end
+                && rect.left() < right_zone_start)
+                .then_some((rect.left(), rect.right()))
+        })
+        .fold((None::<i32>, None::<i32>), |(left, right), rect| {
+            (
+                Some(left.map_or(rect.0, |value| value.min(rect.0))),
+                Some(right.map_or(rect.1, |value| value.max(rect.1))),
+            )
+        });
+    let (central_left, central_right) = semantic_central_bounds.unwrap_or((
+        central_left.unwrap_or(center_x),
+        central_right.unwrap_or(center_x),
+    ));
+
+    let (left, right) = match position {
+        TaskbarPosition::Left => (left_edge, central_left),
+        TaskbarPosition::Right => (central_right, right_edge),
+    };
+    // XAML 正在重新布局时可能短暂只返回一部分元素。遇到反向边界时使用任务栏
+    // 外沿作为保守回退，绝不能把 Bar 折叠成 1 像素。
+    let (left, right) = if right > left {
+        (left, right)
+    } else {
+        match position {
+            TaskbarPosition::Left => (taskbar_rect.left(), central_left),
+            TaskbarPosition::Right => (central_right, taskbar_rect.right()),
+        }
+    };
+    let left = left.clamp(taskbar_rect.left(), taskbar_rect.right().saturating_sub(1));
+    let right = right.clamp(left.saturating_add(1), taskbar_rect.right());
+
+    AvailableSpan { left, right }
+}
+
+/// 识别 Windows 11 中央开始按钮、系统按钮和任务按钮的 UI Automation 类型。
+fn is_central_taskbar_button(region: &OccupiedRegion) -> bool {
+    matches!(
+        region.class_name(),
+        "ToggleButton" | "Taskbar.TaskListButtonAutomationPeer"
+    )
+}
+
+/// 返回开始、搜索、任务视图和任务按钮共同覆盖的横向范围。
+fn central_taskbar_bounds(regions: &[OccupiedRegion]) -> Option<(i32, i32)> {
+    regions
+        .iter()
+        .filter(|region| is_central_taskbar_button(region))
+        .map(|region| (region.rect().left(), region.rect().right()))
+        .fold(None, |bounds, rect| {
+            Some(match bounds {
+                Some((left, right)) => (left.min(rect.0), right.max(rect.1)),
+                None => rect,
+            })
+        })
+}
+
+/// 在 Explorer 任务栏内部查找承载 Windows 11 XAML 控件的独立窗口。
+fn find_xaml_host(taskbar: &TaskbarIdentity) -> Result<HWND, String> {
+    let mut context = XamlHostSearchContext {
+        explorer_process_id: taskbar.explorer_process_id(),
+        handle: None,
+    };
+    let context_pointer = &mut context as *mut XamlHostSearchContext;
+    let _ = unsafe {
+        EnumChildWindows(
+            Some(taskbar.handle()),
+            Some(collect_xaml_host),
+            LPARAM(context_pointer as isize),
+        )
+    };
+
+    context
+        .handle
+        .ok_or_else(|| "无法找到 Explorer 任务栏 XAML 宿主".to_owned())
+}
+
+/// 接收子窗口枚举结果，并在找到属于 Explorer 的 XAML 宿主后立即停止。
+unsafe extern "system" fn collect_xaml_host(
+    window: HWND,
+    parameter: LPARAM,
+) -> crate::platform::windows::BOOL {
+    // SAFETY: parameter 指向 find_xaml_host 栈上的上下文，枚举调用返回前始终有效。
+    let context = unsafe { &mut *(parameter.0 as *mut XamlHostSearchContext) };
+    let mut process_id = 0;
+    let _ = unsafe { GetWindowThreadProcessId(window, Some(&mut process_id)) };
+    if process_id != context.explorer_process_id {
+        return true.into();
+    }
+
+    let mut class_name_buffer = [0_u16; 256];
+    let class_name_length = unsafe { GetClassNameW(window, &mut class_name_buffer) };
+    let class_name =
+        String::from_utf16_lossy(&class_name_buffer[..class_name_length.max(0) as usize]);
+    if class_name == XAML_HOST_CLASS_NAME {
+        context.handle = Some(window);
+        return false.into();
+    }
+
+    true.into()
+}
+
+/// 在独立 MTA 线程中读取 Explorer XAML 宿主，避免影响 Tauri 事件线程的 COM 模型。
+fn read_xaml_host_regions(
     taskbar: &TaskbarIdentity,
     taskbar_rect: &TaskbarRect,
 ) -> Result<Vec<OccupiedRegion>, String> {
-    let taskbar_handle = taskbar.handle_value() as usize;
+    let xaml_host = find_xaml_host(taskbar)?;
+    let xaml_host_handle = xaml_host.0 as usize;
     let explorer_process_id = taskbar.explorer_process_id();
     let taskbar_bounds = occupied_rect_from_taskbar(taskbar_rect);
     let worker = thread::Builder::new()
-        .name("muse-bar-taskbar-uia".to_owned())
+        .name("muse-bar-taskbar-xaml-uia".to_owned())
         .spawn(move || {
-            read_ui_automation_regions_on_worker(
-                taskbar_handle,
-                explorer_process_id,
-                taskbar_bounds,
-            )
+            read_xaml_host_regions_on_worker(xaml_host_handle, explorer_process_id, taskbar_bounds)
         })
-        .map_err(|error| format!("无法启动任务栏 UI Automation 线程：{error}"))?;
+        .map_err(|error| format!("无法启动任务栏 XAML 读取线程：{error}"))?;
 
     worker
         .join()
-        .map_err(|_| "任务栏 UI Automation 线程意外终止".to_owned())?
+        .map_err(|_| "任务栏 XAML 读取线程意外终止".to_owned())?
 }
 
-/// 初始化 COM 并枚举任务栏可访问性树中的 Explorer 元素。
-fn read_ui_automation_regions_on_worker(
-    taskbar_handle: usize,
+/// 初始化 COM，并只枚举 Explorer XAML 宿主中的任务栏控件。
+fn read_xaml_host_regions_on_worker(
+    xaml_host_handle: usize,
     explorer_process_id: u32,
     taskbar_bounds: OccupiedRect,
 ) -> Result<Vec<OccupiedRegion>, String> {
-    let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-    initialized
+    unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
         .ok()
         .map_err(|error| format!("无法初始化 UI Automation COM 线程：{error}"))?;
     let _com_guard = ComGuard;
@@ -233,10 +453,10 @@ fn read_ui_automation_regions_on_worker(
         CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
             .map_err(|error| format!("无法创建 UI Automation：{error}"))?
     };
-    let taskbar_element = unsafe {
+    let xaml_host_element = unsafe {
         automation
-            .ElementFromHandle(crate::platform::windows::HWND(taskbar_handle as *mut _))
-            .map_err(|error| format!("无法从任务栏句柄创建 UI Automation 元素：{error}"))?
+            .ElementFromHandle(HWND(xaml_host_handle as *mut _))
+            .map_err(|error| format!("无法读取 Explorer XAML 宿主：{error}"))?
     };
     let condition = unsafe {
         automation
@@ -244,14 +464,14 @@ fn read_ui_automation_regions_on_worker(
             .map_err(|error| format!("无法创建 UI Automation 查询条件：{error}"))?
     };
     let elements = unsafe {
-        taskbar_element
+        xaml_host_element
             .FindAll(TreeScope_Descendants, &condition)
-            .map_err(|error| format!("无法枚举任务栏 UI Automation 元素：{error}"))?
+            .map_err(|error| format!("无法枚举 Explorer XAML 控件：{error}"))?
     };
     let element_count = unsafe {
         elements
             .Length()
-            .map_err(|error| format!("无法读取任务栏 UI Automation 元素数量：{error}"))?
+            .map_err(|error| format!("无法读取 Explorer XAML 控件数量：{error}"))?
     };
     let mut regions = Vec::new();
 
@@ -408,14 +628,19 @@ fn occupied_rect_from_taskbar(taskbar_rect: &TaskbarRect) -> OccupiedRect {
     }
 }
 
-/// 确保成功初始化的 COM 公寓在线程退出前成对释放。
+/// 确保成功初始化的 COM 公寓在线程结束前成对释放。
 struct ComGuard;
 
 impl Drop for ComGuard {
-    /// 释放当前 UI Automation 工作线程的 COM 初始化计数。
     fn drop(&mut self) {
         unsafe { CoUninitialize() };
     }
+}
+
+/// 子窗口枚举期间保存目标 Explorer 进程和已经找到的 XAML 宿主。
+struct XamlHostSearchContext {
+    explorer_process_id: u32,
+    handle: Option<HWND>,
 }
 
 /// EnumChildWindows 回调期间共享的只读边界和可变结果集合。

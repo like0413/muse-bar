@@ -72,9 +72,10 @@ import {
   readControlPosition,
   readCustomProgressColor,
   readLaunchOnStartup,
+  readLyricsAlignment,
+  readLyricsEnabled,
   readManualOffset,
   readMaximumWidth,
-  readMinimumWidth,
   readProgressColorSource,
   readProgressStyle,
   readShowControls,
@@ -88,6 +89,7 @@ import {
   updateSettings,
   type ColorMode,
   type ControlPosition,
+  type LyricsAlignment,
   type ProgressColorSource,
   type ProgressStyle,
   type SettingsPayload,
@@ -112,8 +114,8 @@ import type { RuntimeInfo } from '@/types/runtime-info'
 
 type SettingsSection = 'taskbar' | 'appearance' | 'media' | 'general' | 'diagnostics'
 
-const WIDTH_SLIDER_MINIMUM = 200
-const WIDTH_SLIDER_MAXIMUM = 520
+const MAXIMUM_WIDTH_SLIDER_MINIMUM = 200
+const MAXIMUM_WIDTH_SLIDER_MAXIMUM = 520
 const WIDTH_SLIDER_STEP = 4
 const TITLE_SCROLL_SPEED_MINIMUM = 10
 const TITLE_SCROLL_SPEED_MAXIMUM = 100
@@ -138,7 +140,6 @@ const mediaSnapshotError = ref<string>()
 const mediaSessionIdentities = ref<MediaSessionIdentity[]>([])
 const mediaSessionActivities = ref<MediaSessionActivity[]>([])
 const logDirectoryError = ref<string>()
-const minWidthDraft = ref<number[]>([])
 const maxWidthDraft = ref<number[]>([])
 const manualOffsetDraft = ref('0')
 const customProgressColorDraft = ref('#0078D4')
@@ -165,6 +166,8 @@ const titleScrollEnabled = computed(() => readTitleScrollEnabled(settings.value)
 const currentTitleScrollMode = computed(() => readTitleScrollMode(settings.value))
 const currentWindowMode = computed(() => readWindowMode(settings.value))
 const launchOnStartup = computed(() => readLaunchOnStartup(settings.value))
+const lyricsEnabled = computed(() => readLyricsEnabled(settings.value))
+const currentLyricsAlignment = computed(() => readLyricsAlignment(settings.value))
 const isCustomProgressColorValid = computed(() =>
   /^#[0-9a-f]{6}$/i.test(customProgressColorDraft.value.trim()),
 )
@@ -201,8 +204,12 @@ const navigationItems: ReadonlyArray<{
 
 const positionOptions: ReadonlyArray<{ value: TaskbarPosition; label: string }> = [
   { value: 'left', label: '靠左' },
-  { value: 'center', label: '居中' },
   { value: 'right', label: '靠右' },
+]
+const lyricsAlignmentOptions: ReadonlyArray<{ value: LyricsAlignment; label: string }> = [
+  { value: 'left', label: '左对齐' },
+  { value: 'center', label: '居中' },
+  { value: 'right', label: '右对齐' },
 ]
 const colorModeOptions: ReadonlyArray<{ value: ColorMode; label: string }> = [
   { value: 'system', label: '跟随系统' },
@@ -284,10 +291,7 @@ async function saveSettingsPatch(patch: SettingsPayload): Promise<void> {
 
 /** 接收单选组的未知值，只保存合法的任务栏位置。 */
 function handlePositionChange(position: unknown): void {
-  if (
-    (position === 'left' || position === 'center' || position === 'right') &&
-    position !== currentPosition.value
-  )
+  if ((position === 'left' || position === 'right') && position !== currentPosition.value)
     void saveSettingsPatch({ position })
 }
 
@@ -337,6 +341,21 @@ function handleProgressStyleChange(progressStyle: unknown): void {
 /** 保存控制按钮显隐状态；隐藏时仍保留按钮位置偏好。 */
 function handleShowControlsChange(show: boolean): void {
   if (show !== showControls.value) void saveSettingsPatch({ showControls: show })
+}
+
+/** 保存歌词模式开关；当前阶段使用十二个中文字作为歌词占位。 */
+function handleLyricsEnabledChange(enabled: boolean): void {
+  if (enabled !== lyricsEnabled.value) void saveSettingsPatch({ lyricsEnabled: enabled })
+}
+
+/** 接收单选组的未知值，只保存合法的歌词对齐方式。 */
+function handleLyricsAlignmentChange(alignment: unknown): void {
+  if (
+    (alignment === 'left' || alignment === 'center' || alignment === 'right') &&
+    alignment !== currentLyricsAlignment.value
+  ) {
+    void saveSettingsPatch({ lyricsAlignment: alignment })
+  }
 }
 
 /** 接收单选组的未知值，只保存合法的控制按钮位置。 */
@@ -398,8 +417,8 @@ function handleTitleScrollModeChange(mode: unknown): void {
 }
 
 /** 更新标题滚动速度草稿，拖动期间只改变设置页显示。 */
-function handleTitleScrollSpeedDraftChange(value: number[]): void {
-  const speed = value[0]
+function handleTitleScrollSpeedDraftChange(value: number[] | undefined): void {
+  const speed = value?.[0]
   if (speed !== undefined) titleScrollSpeedDraft.value = [speed]
 }
 
@@ -415,30 +434,14 @@ function handleLaunchOnStartupChange(enabled: boolean): void {
   if (enabled !== launchOnStartup.value) void saveSettingsPatch({ launchOnStartup: enabled })
 }
 
-/** 只更新最小宽度草稿，达到最大宽度后停止。 */
-function handleMinimumWidthDraftChange(value: number[]): void {
-  const width = value[0]
+/** 更新普通模式最大宽度草稿。 */
+function handleMaximumWidthDraftChange(value: number[] | undefined): void {
+  const width = value?.[0]
   if (width === undefined) return
-  const maximumWidth = maxWidthDraft.value[0] ?? WIDTH_SLIDER_MAXIMUM
-  minWidthDraft.value = [Math.min(width, maximumWidth)]
+  maxWidthDraft.value = [width]
 }
 
-/** 只更新最大宽度草稿，达到最小宽度后停止。 */
-function handleMaximumWidthDraftChange(value: number[]): void {
-  const width = value[0]
-  if (width === undefined) return
-  const minimumWidth = minWidthDraft.value[0] ?? WIDTH_SLIDER_MINIMUM
-  maxWidthDraft.value = [Math.max(width, minimumWidth)]
-}
-
-/** 提交已经限制在合法边界内的最小宽度草稿。 */
-function commitMinimumWidth(value: number[]): void {
-  handleMinimumWidthDraftChange(value)
-  const width = minWidthDraft.value[0]
-  if (width !== undefined) void saveSettingsPatch({ minWidth: width })
-}
-
-/** 提交已经限制在合法边界内的最大宽度草稿。 */
+/** 提交普通模式最大宽度草稿。 */
 function commitMaximumWidth(value: number[]): void {
   handleMaximumWidthDraftChange(value)
   const width = maxWidthDraft.value[0]
@@ -598,11 +601,9 @@ async function initializeSettingsPage(): Promise<void> {
 watch(
   settings,
   (value) => {
-    const minimumWidth = readMinimumWidth(value)
     const maximumWidth = readMaximumWidth(value)
     const manualOffset = readManualOffset(value)
     const titleScrollSpeed = readTitleScrollSpeed(value)
-    if (minimumWidth !== undefined) minWidthDraft.value = [minimumWidth]
     if (maximumWidth !== undefined) maxWidthDraft.value = [maximumWidth]
     if (manualOffset !== undefined) manualOffsetDraft.value = String(manualOffset)
     customProgressColorDraft.value = readCustomProgressColor(value)
@@ -727,49 +728,29 @@ onBeforeUnmount(() => {
                       >{{ option.label }}</ToggleGroupItem
                     >
                   </ToggleGroup>
-                  <FieldDescription
-                    >左右位置贴近对应边缘；居中位置直接覆盖在任务栏中央。</FieldDescription
-                  >
+                  <FieldDescription>Bar 会贴近所选一侧的任务栏组件。</FieldDescription>
                 </Field>
                 <Field>
                   <div class="flex items-center justify-between gap-4">
-                    <FieldLabel>最小宽度</FieldLabel>
-                    <Badge variant="outline"
-                      >{{ minWidthDraft[0] ?? '读取中'
-                      }}<template v-if="minWidthDraft[0] !== undefined"> px</template></Badge
-                    >
-                  </div>
-                  <Slider
-                    aria-label="Bar 最小宽度"
-                    :model-value="minWidthDraft"
-                    :min="WIDTH_SLIDER_MINIMUM"
-                    :max="WIDTH_SLIDER_MAXIMUM"
-                    :step="WIDTH_SLIDER_STEP"
-                    :disabled="isSavingSettings || !settings"
-                    @update:model-value="handleMinimumWidthDraftChange"
-                    @value-commit="commitMinimumWidth"
-                  />
-                  <FieldDescription>短标题时 Bar 不会窄于该值。</FieldDescription>
-                </Field>
-                <Field>
-                  <div class="flex items-center justify-between gap-4">
-                    <FieldLabel>最大宽度</FieldLabel>
+                    <FieldLabel>普通模式最大宽度</FieldLabel>
                     <Badge variant="outline"
                       >{{ maxWidthDraft[0] ?? '读取中'
                       }}<template v-if="maxWidthDraft[0] !== undefined"> px</template></Badge
                     >
                   </div>
                   <Slider
-                    aria-label="Bar 最大宽度"
+                    aria-label="Bar 普通模式最大宽度"
                     :model-value="maxWidthDraft"
-                    :min="WIDTH_SLIDER_MINIMUM"
-                    :max="WIDTH_SLIDER_MAXIMUM"
+                    :min="MAXIMUM_WIDTH_SLIDER_MINIMUM"
+                    :max="MAXIMUM_WIDTH_SLIDER_MAXIMUM"
                     :step="WIDTH_SLIDER_STEP"
                     :disabled="isSavingSettings || !settings"
                     @update:model-value="handleMaximumWidthDraftChange"
                     @value-commit="commitMaximumWidth"
                   />
-                  <FieldDescription>长标题超过最大宽度后会截断，不挤压控制按钮。</FieldDescription>
+                  <FieldDescription>
+                    普通模式按内容自然收缩；歌词模式改为占满对应任务栏空白区域。
+                  </FieldDescription>
                 </Field>
                 <Field>
                   <div class="flex items-center justify-between gap-4">
@@ -791,6 +772,51 @@ onBeforeUnmount(() => {
                     @blur="commitManualOffset"
                     @keydown.enter="commitManualOffset"
                   />
+                </Field>
+              </FieldGroup>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>歌词模式</CardTitle>
+              <CardDescription>
+                当前使用十二字占位歌词验证宽度与悬停动画，后续再接入真实歌词。
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <FieldGroup>
+                <Field orientation="horizontal">
+                  <FieldContent>
+                    <FieldTitle>显示歌词</FieldTitle>
+                    <FieldDescription>
+                      默认显示“这是一句十二字占位歌词呀”，悬停时切换为媒体信息。
+                    </FieldDescription>
+                  </FieldContent>
+                  <Switch
+                    :model-value="lyricsEnabled"
+                    :disabled="isSavingSettings || !settings"
+                    aria-label="显示歌词"
+                    @update:model-value="handleLyricsEnabledChange"
+                  />
+                </Field>
+                <Field :data-disabled="!lyricsEnabled">
+                  <FieldLabel>歌词对齐方式</FieldLabel>
+                  <ToggleGroup
+                    type="single"
+                    variant="outline"
+                    :model-value="currentLyricsAlignment"
+                    :disabled="isSavingSettings || !settings || !lyricsEnabled"
+                    @update:model-value="handleLyricsAlignmentChange"
+                  >
+                    <ToggleGroupItem
+                      v-for="option in lyricsAlignmentOptions"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </ToggleGroupItem>
+                  </ToggleGroup>
+                  <FieldDescription>控制歌词在封面右侧区域中的水平位置。</FieldDescription>
                 </Field>
               </FieldGroup>
             </CardContent>

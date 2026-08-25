@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use tauri::{Runtime, Window};
+use tauri::{PhysicalSize, Runtime, Webview, Window};
 
 use crate::platform::windows::{
     GetCurrentProcessId, GetParent, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId,
@@ -27,6 +27,7 @@ const STABILIZATION_DELAYS: [Duration; 3] = [
 ];
 const WIDTH_ANIMATION_STEPS: i32 = 12;
 const WIDTH_ANIMATION_STEP_DURATION: Duration = Duration::from_millis(15);
+const WEBVIEW_EXPANSION_LEAD_TIME: Duration = Duration::from_millis(34);
 
 /// Child 挂载后提供给 WebView 创建流程的物理像素尺寸。
 pub(crate) struct ChildHostSize {
@@ -110,15 +111,19 @@ pub(crate) fn hide_window<R: Runtime>(bar_window: &Window<R>) -> Result<(), Stri
     Ok(())
 }
 
-/// 在保持 Child 高度不变的前提下，平滑调整原生宿主宽度与目标横坐标。
-/// Child WebView 已启用自动尺寸同步，无需在动画中重复发送尺寸消息。
+/// 在保持 Child 高度不变的前提下调整原生宿主宽度与目标横坐标。
+///
+/// 缩短时保留平滑动画；增长时一次完成。WebView2 的合成表面晚于原生父窗口扩展，
+/// 逐帧增长会反复暴露尚未绘制的新区域，形成白色拖影。
 pub(crate) fn animate_window_width<R: Runtime>(
     bar_window: Window<R>,
+    bar_webview: Webview<R>,
     taskbar: &TaskbarIdentity,
     taskbar_rect: &TaskbarRect,
     taskbar_dpi: &TaskbarDpi,
     position: TaskbarPosition,
     manual_offset: i32,
+    preferred_screen_x: Option<i32>,
     target_width: i32,
     animation_revision: u64,
     latest_animation_revision: Arc<AtomicU64>,
@@ -154,13 +159,19 @@ pub(crate) fn animate_window_width<R: Runtime>(
     if !unsafe { ScreenToClient(taskbar_handle, &mut client_position) }.as_bool() {
         return Err("无法将 Bar 当前位置转换为任务栏客户区坐标".to_owned());
     }
-    let occupied_regions = taskbar_occupancy::read_positioning_regions(taskbar, taskbar_rect);
-    let base_screen_x = taskbar_occupancy::resolve_bar_screen_x(
-        position,
-        taskbar_rect,
-        &occupied_regions,
-        target_width,
-    );
+    let base_screen_x = match preferred_screen_x {
+        Some(screen_x) => screen_x,
+        None => {
+            let occupied_regions =
+                taskbar_occupancy::read_positioning_regions(taskbar, taskbar_rect);
+            taskbar_occupancy::resolve_bar_screen_x(
+                position,
+                taskbar_rect,
+                &occupied_regions,
+                target_width,
+            )
+        }
+    };
     let target_screen_x = apply_manual_offset(
         base_screen_x,
         manual_offset,
@@ -177,23 +188,52 @@ pub(crate) fn animate_window_width<R: Runtime>(
     }
     let bar_handle_value = bar_handle.0 as usize;
     let taskbar_handle_value = taskbar_handle.0 as usize;
+    let is_expanding = target_width > start_width;
+    let position_distance = target_client_position.x.abs_diff(client_position.x);
+    let large_reposition_threshold = u32::try_from(taskbar_rect.width() / 3).unwrap_or_default();
+    let is_large_reposition = position_distance > large_reposition_threshold;
+    let is_instant_change = is_expanding || is_large_reposition;
+    let animation_steps = if is_instant_change {
+        1
+    } else {
+        WIDTH_ANIMATION_STEPS
+    };
+
+    let webview_width = u32::try_from(target_width)
+        .map_err(|_| "Bar WebView 目标宽度无法转换为物理像素".to_owned())?;
+    let webview_height =
+        u32::try_from(height).map_err(|_| "Bar WebView 高度无法转换为物理像素".to_owned())?;
+    let target_webview_size = PhysicalSize::new(webview_width, webview_height);
+    if is_expanding {
+        // WebView 先在旧宿主的裁剪范围外完成扩展和绘制。等待约两帧后再放大宿主，
+        // 用户看到新区域时合成表面已经准备好，不会暴露透明宿主的空白底色。
+        bar_webview
+            .set_size(target_webview_size)
+            .map_err(|error| format!("无法预扩展 Bar WebView：{error}"))?;
+    }
 
     thread::Builder::new()
         .name("muse-bar-width-animation".to_owned())
         .spawn(move || {
-            for step in 1..=WIDTH_ANIMATION_STEPS {
-                thread::sleep(WIDTH_ANIMATION_STEP_DURATION);
+            if is_expanding {
+                thread::sleep(WEBVIEW_EXPANSION_LEAD_TIME);
+            }
+            for step in 1..=animation_steps {
+                if !is_instant_change {
+                    thread::sleep(WIDTH_ANIMATION_STEP_DURATION);
+                }
                 if latest_animation_revision.load(Ordering::Acquire) != animation_revision {
                     return;
                 }
 
-                let progress = f64::from(step) / f64::from(WIDTH_ANIMATION_STEPS);
+                let progress = f64::from(step) / f64::from(animation_steps);
                 let eased_progress = 1.0 - (1.0 - progress).powi(3);
                 let width_delta = f64::from(target_width - start_width) * eased_progress;
                 let width = start_width + width_delta.round() as i32;
                 let x_delta = f64::from(target_client_position.x - client_position.x);
                 let x = client_position.x + (x_delta * eased_progress).round() as i32;
                 let scheduled_revision = Arc::clone(&latest_animation_revision);
+                let final_webview = (step == animation_steps).then(|| bar_webview.clone());
                 let scheduled = bar_window.run_on_main_thread(move || {
                     if scheduled_revision.load(Ordering::Acquire) != animation_revision {
                         return;
@@ -220,8 +260,17 @@ pub(crate) fn animate_window_width<R: Runtime>(
                             SWP_NOACTIVATE | SWP_NOZORDER,
                         )
                     };
-                    if let Err(error) = resized {
-                        log::warn!("无法调整 Bar 原生宿主宽度：{error}");
+                    match resized {
+                        Ok(()) => {
+                            // 原生 SetWindowPos 不一定触发 Tauri 的自动 WebView 尺寸同步。
+                            // 最后一帧显式对齐，避免 WebView 保留旧宽度而裁掉右侧控制按钮。
+                            if let Some(webview) = final_webview {
+                                if let Err(error) = webview.set_size(target_webview_size) {
+                                    log::warn!("无法同步 Bar WebView 最终宽度：{error}");
+                                }
+                            }
+                        }
+                        Err(error) => log::warn!("无法调整 Bar 原生宿主宽度：{error}"),
                     }
                 });
                 if let Err(error) = scheduled {

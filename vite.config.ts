@@ -25,7 +25,7 @@ export default defineConfig({
     ],
   },
   fmt: {
-    ignorePatterns: ['auto-imports.d.ts'],
+    ignorePatterns: ['auto-imports.d.ts', 'components.d.ts'],
     semi: false,
     singleQuote: true,
     experimentalSortImports: true,
@@ -101,6 +101,7 @@ export default defineConfig({
     Components({
       dts: true,
       resolvers: [MotionResolver()],
+      globs: ['src/components/**/*', '!src/components/ui/**/*'],
     }),
     VueI18nPlugin({
       include: resolve(dirname(fileURLToPath(import.meta.url)), './src/locales/**'),

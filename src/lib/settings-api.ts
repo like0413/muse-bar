@@ -4,9 +4,10 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 export type SettingsPayload = Record<string, unknown>
 export type ColorMode = 'system' | 'dark' | 'light'
 export type ControlPosition = 'left' | 'right'
+export type LyricsAlignment = 'left' | 'center' | 'right'
 export type ProgressColorSource = 'artwork' | 'system' | 'custom'
 export type ProgressStyle = 'underline' | 'background-gradient'
-export type TaskbarPosition = 'left' | 'center' | 'right'
+export type TaskbarPosition = 'left' | 'right'
 export type TitleScrollMode = 'continuous' | 'restart' | 'bounce'
 export type WindowMode = 'auto' | 'owner'
 
@@ -33,8 +34,7 @@ export function listenToSettingsChanges(
 
 /** 从设置载荷中读取任务栏位置，异常值回退到产品默认的靠右。 */
 export function readTaskbarPosition(settings: SettingsPayload | undefined): TaskbarPosition {
-  const position = settings?.position
-  return position === 'left' || position === 'center' ? position : 'right'
+  return settings?.position === 'left' ? 'left' : 'right'
 }
 
 /** 从设置载荷中读取颜色模式，旧设置缺少该字段时默认跟随系统。 */
@@ -94,11 +94,6 @@ export function readTitleScrollMode(settings: SettingsPayload | undefined): Titl
   return mode === 'restart' || mode === 'bounce' ? mode : 'continuous'
 }
 
-/** 从设置载荷中读取 Bar 的最小逻辑宽度。 */
-export function readMinimumWidth(settings: SettingsPayload | undefined): number | undefined {
-  return typeof settings?.minWidth === 'number' ? settings.minWidth : undefined
-}
-
 /** 从设置载荷中读取 Bar 的最大逻辑宽度。 */
 export function readMaximumWidth(settings: SettingsPayload | undefined): number | undefined {
   return typeof settings?.maxWidth === 'number' ? settings.maxWidth : undefined
@@ -113,6 +108,17 @@ export function readManualOffset(settings: SettingsPayload | undefined): number 
 export function readTargetMonitor(settings: SettingsPayload | undefined): string {
   const monitor = settings?.targetMonitor
   return typeof monitor === 'string' && monitor.trim() ? monitor : 'primary'
+}
+
+/** 从设置载荷中读取歌词模式开关，旧设置缺少字段时默认关闭。 */
+export function readLyricsEnabled(settings: SettingsPayload | undefined): boolean {
+  return settings?.lyricsEnabled === true
+}
+
+/** 从设置载荷中读取歌词对齐方式，旧设置默认居中。 */
+export function readLyricsAlignment(settings: SettingsPayload | undefined): LyricsAlignment {
+  const alignment = settings?.lyricsAlignment
+  return alignment === 'left' || alignment === 'right' ? alignment : 'center'
 }
 
 /** 从设置载荷中读取窗口宿主模式。 */

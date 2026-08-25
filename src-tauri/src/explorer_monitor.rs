@@ -21,18 +21,31 @@ use crate::{
         PostQuitMessage, RegisterClassW, RegisterWindowMessageW, TranslateMessage, HINSTANCE, HWND,
         LPARAM, LRESULT, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WNDCLASSW, WPARAM,
     },
+    settings::TaskbarPosition,
     state::AppState,
-    taskbar,
+    taskbar, taskbar_occupancy,
 };
 
 const RECOVERY_ATTEMPTS: usize = 30;
 const RECOVERY_INTERVAL: Duration = Duration::from_millis(100);
+const TASKBAR_LAYOUT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const BAR_WINDOW_LABEL: &str = "bar";
 
 static TASKBAR_CREATED_MESSAGE: AtomicU32 = AtomicU32::new(0);
 static TASKBAR_CREATED_SENDER: OnceLock<SyncSender<()>> = OnceLock::new();
 
-/// 启动 Win32 消息线程和任务栏恢复工作线程。
+/// 会影响歌词 Bar 可用区域的最小任务栏布局快照。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LyricsTaskbarLayout {
+    taskbar_handle: u64,
+    taskbar_dpi: u32,
+    position: TaskbarPosition,
+    manual_offset: i32,
+    span_left: i32,
+    span_width: i32,
+}
+
+/// 启动 Win32 消息、任务栏恢复和歌词可用区域监控线程。
 pub fn start(app: AppHandle) -> io::Result<()> {
     // Explorer 在短时间内重复广播时，只保留一个待处理的恢复任务。
     // 容量为 1 的同步通道既能合并重复通知，也能防止任务无限积压。
@@ -40,10 +53,14 @@ pub fn start(app: AppHandle) -> io::Result<()> {
     TASKBAR_CREATED_SENDER
         .set(sender.clone())
         .map_err(|_| io::Error::new(io::ErrorKind::AlreadyExists, "Explorer 监听器已经启动"))?;
-
+    let recovery_app = app.clone();
     thread::Builder::new()
         .name("muse-bar-explorer-recovery".to_owned())
-        .spawn(move || run_recovery_worker(app, receiver))?;
+        .spawn(move || run_recovery_worker(recovery_app, receiver))?;
+
+    thread::Builder::new()
+        .name("muse-bar-taskbar-layout".to_owned())
+        .spawn(move || run_taskbar_layout_monitor(app))?;
 
     thread::Builder::new()
         .name("muse-bar-windows-messages".to_owned())
@@ -81,6 +98,99 @@ fn run_recovery_worker(app: AppHandle, receiver: Receiver<()>) {
             log::error!("Explorer 重启后无法恢复 Bar：{error}");
         }
     }
+}
+
+/// 定期读取 Explorer XAML 任务栏布局，仅在稳定的目标范围变化后调整歌词 Bar。
+fn run_taskbar_layout_monitor(app: AppHandle) {
+    let mut previous_layout = None;
+    let mut pending_layout = None;
+    loop {
+        thread::sleep(TASKBAR_LAYOUT_POLL_INTERVAL);
+        if synchronize_lyrics_taskbar_layout(&app, &mut previous_layout, &mut pending_layout)
+            .is_err()
+        {
+            // Explorer 重启和 Bar 重建期间读取失败属于正常过渡；清空快照即可在恢复后重试。
+            previous_layout = None;
+            pending_layout = None;
+        }
+    }
+}
+
+/// 连续两次读取到相同的任务栏可用区域后，再复用现有宽度动画。
+fn synchronize_lyrics_taskbar_layout(
+    app: &AppHandle,
+    previous_layout: &mut Option<LyricsTaskbarLayout>,
+    pending_layout: &mut Option<LyricsTaskbarLayout>,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let settings = state.settings()?;
+    if !settings.lyrics_enabled {
+        *previous_layout = None;
+        *pending_layout = None;
+        return Ok(());
+    }
+
+    let bar_window = app
+        .get_window(BAR_WINDOW_LABEL)
+        .ok_or_else(|| "Bar 原生宿主尚未创建".to_owned())?;
+    let bar_webview = app
+        .get_webview(BAR_WINDOW_LABEL)
+        .ok_or_else(|| "Bar WebView 尚未创建".to_owned())?;
+    let taskbar = taskbar::find_taskbar(&settings.target_monitor)?;
+    if !child_host::is_attached_to_taskbar(&bar_window, &taskbar) {
+        return Err("Bar 尚未挂载到目标任务栏".to_owned());
+    }
+
+    let taskbar_rect = taskbar::read_taskbar_rect(&taskbar)?;
+    let taskbar_dpi = taskbar::read_taskbar_dpi(&taskbar)?;
+    let positioning_regions = taskbar_occupancy::read_positioning_regions(&taskbar, &taskbar_rect);
+    let positioning_span = taskbar_occupancy::resolve_available_span(
+        settings.position,
+        &taskbar_rect,
+        &positioning_regions,
+    );
+    let current_layout = LyricsTaskbarLayout {
+        taskbar_handle: taskbar.handle_value(),
+        taskbar_dpi: taskbar_dpi.dpi(),
+        position: settings.position,
+        manual_offset: settings.manual_offset,
+        span_left: positioning_span.left(),
+        span_width: positioning_span.width(),
+    };
+    if previous_layout.as_ref() == Some(&current_layout) {
+        *pending_layout = None;
+        return Ok(());
+    }
+    if pending_layout.as_ref() != Some(&current_layout) {
+        // Windows 11 会先更新部分 XAML 元素再完成整组居中。保留候选快照，
+        // 下一轮仍相同才说明它不是动画中间帧。
+        *pending_layout = Some(current_layout);
+        return Ok(());
+    }
+
+    let logical_width = taskbar_dpi
+        .physical_to_logical(positioning_span.width())
+        .round()
+        .max(1.0) as u32;
+    state.report_bar_content_width(1.0, Some(logical_width))?;
+    let (animation_revision, latest_animation_revision) = state.begin_bar_width_animation();
+    child_host::animate_window_width(
+        bar_window,
+        bar_webview,
+        &taskbar,
+        &taskbar_rect,
+        &taskbar_dpi,
+        settings.position,
+        settings.manual_offset,
+        Some(positioning_span.left()),
+        positioning_span.width(),
+        animation_revision,
+        latest_animation_revision,
+    )?;
+    *previous_layout = Some(current_layout);
+    *pending_layout = None;
+
+    Ok(())
 }
 
 /// 重试完整恢复流程，等待任务栏、Tauri 窗口注册表和 WebView2 都进入可用状态。
@@ -200,7 +310,6 @@ fn run_message_window() -> Result<(), String> {
         return Err("无法注册 TaskbarCreated 消息".to_owned());
     }
     TASKBAR_CREATED_MESSAGE.store(taskbar_created_message, Ordering::Release);
-
     let module = unsafe { GetModuleHandleW(None) }
         .map_err(|error| format!("无法获取当前模块句柄：{error}"))?;
     let instance = HINSTANCE(module.0);
@@ -233,7 +342,6 @@ fn run_message_window() -> Result<(), String> {
         )
     }
     .map_err(|error| format!("无法创建 Explorer 消息窗口：{error}"))?;
-
     let mut message = MSG::default();
     loop {
         let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
@@ -253,7 +361,7 @@ fn run_message_window() -> Result<(), String> {
     Ok(())
 }
 
-/// 接收原始 Windows 消息，并将 TaskbarCreated 快速转交给恢复线程。
+/// 接收原始 Windows 消息，并转交 Explorer 恢复通知。
 unsafe extern "system" fn message_window_proc(
     window: HWND,
     message: u32,
