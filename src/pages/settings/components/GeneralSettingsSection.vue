@@ -47,15 +47,6 @@ function handleLaunchOnStartupChange(enabled: boolean): void {
             @update:model-value="handleLaunchOnStartupChange"
           />
         </Field>
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldTitle>单实例与托盘</FieldTitle>
-            <FieldDescription>
-              重复启动会唤醒本窗口；关闭设置页后应用继续留在托盘。
-            </FieldDescription>
-          </FieldContent>
-          <Badge variant="secondary">已启用</Badge>
-        </Field>
       </FieldGroup>
     </CardContent>
   </Card>

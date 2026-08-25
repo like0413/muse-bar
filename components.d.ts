@@ -11,13 +11,6 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
-    Breadcrumb: typeof import('./src/components/ui/breadcrumb/Breadcrumb.vue')['default']
-    BreadcrumbEllipsis: typeof import('./src/components/ui/breadcrumb/BreadcrumbEllipsis.vue')['default']
-    BreadcrumbItem: typeof import('./src/components/ui/breadcrumb/BreadcrumbItem.vue')['default']
-    BreadcrumbLink: typeof import('./src/components/ui/breadcrumb/BreadcrumbLink.vue')['default']
-    BreadcrumbList: typeof import('./src/components/ui/breadcrumb/BreadcrumbList.vue')['default']
-    BreadcrumbPage: typeof import('./src/components/ui/breadcrumb/BreadcrumbPage.vue')['default']
-    BreadcrumbSeparator: typeof import('./src/components/ui/breadcrumb/BreadcrumbSeparator.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
   }

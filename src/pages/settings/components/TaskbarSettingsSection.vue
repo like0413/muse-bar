@@ -296,24 +296,5 @@ watch(
         </FieldGroup>
       </CardContent>
     </Card>
-
-    <Card>
-      <CardHeader>
-        <CardTitle>宿主模式</CardTitle>
-        <CardDescription>当前版本使用已经验证通过的 Child 真嵌入方案。</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldTitle>Owner 兼容模式</FieldTitle>
-            <FieldDescription>
-              Owner 留待以后实现；当前实际模式为
-              {{ currentWindowMode === 'auto' ? 'Child' : currentWindowMode }}。
-            </FieldDescription>
-          </FieldContent>
-          <Switch :model-value="false" disabled aria-label="Owner 兼容模式暂未启用" />
-        </Field>
-      </CardContent>
-    </Card>
   </div>
 </template>
