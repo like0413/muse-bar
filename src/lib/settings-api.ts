@@ -1,7 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
-export type SettingsPayload = Record<string, unknown>
 export type ColorMode = 'system' | 'dark' | 'light'
 export type ElementAlignment = 'left' | 'right'
 export type LyricsAlignment = 'left' | 'center' | 'right'
@@ -10,6 +9,32 @@ export type ProgressStyle = 'underline' | 'background-gradient'
 export type TaskbarPosition = 'left' | 'right'
 export type TitleScrollMode = 'continuous' | 'restart' | 'bounce'
 export type WindowMode = 'auto' | 'owner'
+
+/** Rust `AppSettings` 经 camelCase 序列化后的完整 IPC 契约。 */
+export interface SettingsPayload {
+  readonly schemaVersion: number
+  readonly windowMode: WindowMode
+  readonly position: TaskbarPosition
+  readonly targetMonitor: string
+  readonly maxWidth: number
+  readonly manualOffset: number
+  readonly showControls: boolean
+  readonly elementAlignment: ElementAlignment
+  readonly showProgress: boolean
+  readonly progressStyle: ProgressStyle
+  readonly progressColorSource: ProgressColorSource
+  readonly customProgressColor: string
+  readonly colorMode: ColorMode
+  readonly titleScrollEnabled: boolean
+  readonly titleScrollSpeed: number
+  readonly titleScrollMode: TitleScrollMode
+  readonly lyricsEnabled: boolean
+  readonly lyricsAlignment: LyricsAlignment
+  readonly launchOnStartup: boolean
+}
+
+/** 设置页可提交的字段；配置版本仅由 Rust 的迁移逻辑维护。 */
+export type SettingsPatch = Partial<Omit<SettingsPayload, 'schemaVersion'>>
 
 const SETTINGS_CHANGED_EVENT = 'settings-changed'
 

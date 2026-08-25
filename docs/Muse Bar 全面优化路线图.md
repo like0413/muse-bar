@@ -129,10 +129,10 @@ Windows 人工验收：
 | 顺序 | 章节                            | 状态   | 前置条件     | 下一动作           |
 | ---: | ------------------------------- | ------ | ------------ | ------------------ |
 |    1 | 第一章：实施优先级              | 已完成 | 无           | 已进入第二章       |
-|    2 | 第二章：工程化与依赖治理        | 已完成 | 第一章完成   | 开始第三章         |
-|    3 | 第三章：安全                    | 待开始 | 第二章完成   | 审查并建立最小 CSP |
-|    4 | 第四章：TypeScript 与运行时验证 | 未开始 | 第三章完成   | 等待第三章         |
-|    5 | 第五章：IPC 与 Tauri Command    | 未开始 | 第四章完成   | 等待第四章         |
+|    2 | 第二章：工程化与依赖治理        | 已完成 | 第一章完成   | 已进入第三章       |
+|    3 | 第三章：安全                    | 已完成 | 第二章完成   | 已进入第四章       |
+|    4 | 第四章：TypeScript 与运行时验证 | 已完成 | 第三章完成   | 已进入第五章       |
+|    5 | 第五章：IPC 与 Tauri Command    | 待开始 | 第四章完成   | 审计命令和错误语义 |
 |    6 | 第六章：可靠性与恢复能力        | 未开始 | 第五章完成   | 等待第五章         |
 |    7 | 第七章：测试体系                | 未开始 | 第六章完成   | 等待第六章         |
 |    8 | 第八章：架构与 SOLID            | 未开始 | 第七章完成   | 等待第七章         |
@@ -256,69 +256,55 @@ Clippy；bundle smoke build、产物大小趋势和发布自动化仍需单独�
 
 ## 12. CSP
 
-这是当前第一安全优先级：
+本节状态为 `Confirmed`。原配置将 `csp` 设为 `null`，全局 CSS 还会请求 Google Fonts。
 
-- 禁止远程脚本。
-- 限制图片来源。
-- 限制连接目标。
-- 禁止 frame/object。
-- 逐步减少不必要的 inline style/script。
+实施结果：
+
+- 生产 CSP 默认仅允许同源资源、Tauri IPC、data/blob 图片和本地字体。
+- 开发 CSP 只额外允许固定的 `localhost:1420` HTTP/WebSocket 开发连接。
+- 禁止 object、frame、base URL 和表单提交。
+- 保留 `style-src 'unsafe-inline'`，因为现有组件和 Vite 开发模式需要运行时样式；未开放 inline script。
+- 移除 Google Fonts 网络请求，继续使用现有系统字体栈。
 
 ## 13. Capability 最小权限
 
-继续检查：
+本节状态为 `Confirmed`。`core:default` 会同时授予 path、event、window、webview、app、image、
+resources、menu 和 tray 的默认权限，超过当前前端实际需要。
 
-- `core:default` 实际展开内容。
-- Bar 和 Settings 是否需要不同 core 权限。
-- 后续添加插件时不得直接使用宽泛 `*:default`。
-- 不为方便开放 shell、filesystem 或 process 全权限。
+实施结果：
+
+- Bar 和 Settings 均只保留 `core:event:allow-listen` 与 `core:event:allow-unlisten`。
+- 未开放 shell、filesystem、process、HTTP、clipboard 或插件权限。
+- 自定义 command 的窗口级访问控制留到第五章统一处理，避免在本章提前改变 IPC 契约。
 
 ## 14. 路径安全
 
-目前前端没有传入任意文件路径，但未来新增文件功能时必须处理：
+本节状态为 `Keep / Conditional`。当前前端没有向 Rust 传入任意文件路径；设置和日志路径均由
+Tauri 应用目录 API 生成，因此本章不修改现有路径逻辑。
 
-- `..`
-- UNC
-- symlink escape
-- 绝对路径逃逸
-- 规范化后重新验证
-- 原子替换和临时文件权限
+如果未来新增用户可选路径，再单独处理 `..`、UNC、symlink、绝对路径逃逸和规范化后复验。
 
 ## 15. 外部命令
 
-当前调用使用固定命令和参数，没有直接注入风险。
+本节状态为 `Keep`。当前只调用固定的 `cmd.exe /D /C ver` 和 `explorer.exe`，参数不接受前端
+命令片段；日志目录也由 Tauri 应用目录 API 生成，没有发现命令注入路径。
 
-仍建议：
-
-- Windows 版本优先考虑系统 API，减少 `cmd.exe` 依赖。
-- 保持所有参数使用 `.arg()`/`.args()`。
-- 不接受前端传入可执行文件或命令片段。
-- 打开目录时仅使用应用自身计算的日志路径。
+改用另一套 Windows 版本 API 没有已证实收益，本章不替换现有实现。
 
 ## 16. 数据与日志泄漏
 
-检查日志不得包含：
+本节状态为 `Verify`。扫描未发现 API key、密码、私钥、完整封面数据或设置文件内容写入日志。
+媒体事件 token 是 Windows 事件注销句柄，不是认证凭据。
 
-- 完整封面数据。
-- 用户目录全路径。
-- 媒体应用的敏感参数。
-- 设置文件完整内容。
-- Windows 原始句柄之外不必要的系统信息。
-
-诊断页面需要明确其数据用途。
+诊断页仍会显示任务栏句柄、进程 ID 和应用日志目录等本机信息，但数据不发送到外部；若未来增加
+诊断导出或上传，再建立脱敏规则和用户确认流程。
 
 ## 17. 更新供应链
 
-如果未来加入 updater：
+本节状态为 `Conditional`。当前没有 updater 插件、更新端点或自动更新流程，因此不提前建设签名、
+回滚或密钥管理。
 
-- HTTPS。
-- 签名验证。
-- 私钥不进入仓库或客户端。
-- 失败回滚。
-- 安装包来源固定。
-- 更新检查不阻塞首屏。
-
----
+添加 updater 时必须同时要求 HTTPS、签名验证、固定来源、失败回滚，并确保私钥不进入仓库或客户端。
 
 ---
 
@@ -326,73 +312,76 @@ Clippy；bundle smoke build、产物大小趋势和发布自动化仍需单独�
 
 ## 18. 完整 IPC 类型
 
-将 `SettingsPayload = Record<string, unknown>` 替换成完整接口。
+状态：`Confirmed`，已完成。
 
-同样检查：
+`SettingsPayload = Record<string, unknown>` 已替换为与 Rust `AppSettings` 的 camelCase 序列化结果
+逐字段对应的接口，覆盖配置版本、窗口、任务栏、外观、歌词和开机启动设置。设置页使用独立的
+`SettingsPatch` 提交局部改动，并从可修改字段中排除只应由 Rust 迁移逻辑维护的
+`schemaVersion`。
 
-- MediaSnapshot
-- CurrentTimeline
-- RuntimeInfo
-- Taskbar diagnostics
-- Bar width measurement
-- IPC error
-- Event payload
+同步审计结果：
+
+- `MediaSnapshot`、`CurrentTimeline`、`RuntimeInfo`、任务栏诊断和 Bar 宽度测量已有明确接口。
+- 媒体控制错误与复杂事件载荷已有明确 union 或接口。
+- 没有发现仍以 `Record<string, unknown>`、`unknown[]` 或 `any` 代替已知 IPC DTO 的同类问题。
 
 ## 19. 建立统一命令名称
 
-避免命令名散落为字符串：
+状态：`Keep / Conditional`，当前不修改。
 
-```
-export const IPC_COMMANDS = {
-  getSettings: 'get_settings',
-  updateSettings: 'update_settings',
-} as const
-```
+命令字符串已按领域集中在各 API 模块中，调用点没有重复散落。仅在 TypeScript 中增加
+`IPC_COMMANDS` 并不能消除与 Rust 手工同步的问题，反而增加一次间接跳转。若后续引入跨语言
+绑定生成器，或同一命令名开始在多个模块重复，再建立 Rust/TypeScript 共享的生成来源。
 
-事件名也应建立单一来源，防止 Rust 和 TypeScript 手工漂移。
+事件名同样已封装在对应 API 模块内；保持当前局部常量。
 
 ## 20. 运行时验证
 
-TypeScript 无法验证 IPC 实际返回的数据。
+状态：`Keep / Conditional`，当前不增加前端 schema。
 
-建议优先验证：
+当前数据边界不是“任意 JSON 直接进入 Vue”：设置文件先由 Rust `serde` 反序列化，再执行版本迁移、
+数值范围归一化、显示器标识清理、颜色校验和损坏文件回退，IPC 只序列化已构造成功的
+`AppSettings`。前端读取函数仍保留安全回退，用于兼容缺失或无法识别的值。
 
-- 设置文件。
-- 设置 IPC 返回。
-- 诊断数据。
-- 复杂事件载荷。
+因此，再在前端手写一份完整 schema 会复制 Rust 规则并形成漂移风险。仅在以下条件之一出现时实施：
 
-可选择：
-
-- 轻量手写 type guard。
-- 集中 schema。
-- 从 Rust schema 生成 TypeScript。
-
-不建议为每个简单布尔 command 引入重型校验。
+- IPC 开始接收网络、插件或其他不可信来源的数据。
+- 某个复杂载荷出现实际的反序列化或版本漂移故障。
+- 项目引入能从 Rust 类型生成 TypeScript 和运行时 schema 的单一来源工具。
 
 ## 21. 枚举和穷尽检查
 
-对以下 union 使用 exhaustive checking：
+状态：`Verify → Keep`。
 
-- `ControlAction`
-- `MediaPlayerKind`
-- `CurrentPlaybackStatus`
-- `ProgressStyle`
-- `WindowMode`
-- 错误码
-
-新增枚举成员时应触发编译错误，而不是静默进入默认分支。
+已检查 `ControlAction`、`MediaPlayerKind`、`CurrentPlaybackStatus`、`ProgressStyle`、
+`WindowMode` 和错误码的消费者。当前没有对这些 union 进行分支映射的 `switch`，主要是相等判断、
+透传和声明式选项，不存在会因 `default` 分支而静默吞掉新成员的路径。当前不添加无用途的
+`assertNever`；未来出现全量分支映射时再要求穷尽检查。
 
 ## 22. Readonly 契约
 
-对于事件快照和 Store 对外状态，考虑使用：
+状态：`Confirmed`，设置边界已完成；其余保持现状。
 
-- `Readonly<T>`
-- readonly 数组
-- Pinia action 更新
-- composable 返回只读 ref
+`SettingsPayload` 的全部字段已标记为 `readonly`。设置 Store 不原地修改快照，只通过
+`saveSettingsPatch` 合并新对象，并用 Rust 返回的规范化完整设置替换旧快照，符合当前数据流。
 
-减少组件意外修改全局快照。
+没有证据表明媒体事件数组或其他 Store 状态发生组件侧误改，因此不在本章机械扩散深层
+`Readonly`、只读数组或额外 composable 包装；若未来出现共享状态被绕过 action 修改的实例，
+再在对应边界收紧。
+
+## 本章验收
+
+2026-08-25 已完成累计验证：
+
+- `vp install`：通过，依赖已是最新状态。
+- `vp run type-check`：通过，完整 DTO 与全部调用点类型一致。
+- `vp check`：通过，342 个文件格式正确，324 个文件无 lint 或类型错误。
+- `vp build`：通过，前端生产构建成功。
+- `cargo check --manifest-path src-tauri/Cargo.toml --locked`：通过。
+- `cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings`：通过。
+
+本章没有启动开发服务。前端测试仍按第七章建立测试体系后执行，不将当前“没有测试文件”误记为
+第四章回归。
 
 ---
 

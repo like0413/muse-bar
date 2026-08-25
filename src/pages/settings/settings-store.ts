@@ -15,7 +15,12 @@ import {
   type MediaSnapshot,
 } from '@/lib/media-api'
 import { getRuntimeInfo } from '@/lib/runtime-info'
-import { getSettings, updateSettings, type SettingsPayload } from '@/lib/settings-api'
+import {
+  getSettings,
+  updateSettings,
+  type SettingsPatch,
+  type SettingsPayload,
+} from '@/lib/settings-api'
 import {
   getTaskbarDpi,
   getTaskbarIdentity,
@@ -64,7 +69,7 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   /** 保存局部设置补丁，并采用 Rust 返回的规范化完整设置。 */
-  async function saveSettingsPatch(patch: SettingsPayload): Promise<void> {
+  async function saveSettingsPatch(patch: SettingsPatch): Promise<void> {
     if (!settings.value || isSavingSettings.value) return
     isSavingSettings.value = true
     settingsError.value = ''
