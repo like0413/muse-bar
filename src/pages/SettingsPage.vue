@@ -69,8 +69,8 @@ import { getRuntimeInfo } from '@/lib/runtime-info'
 import {
   getSettings,
   readColorMode,
-  readControlPosition,
   readCustomProgressColor,
+  readElementAlignment,
   readLaunchOnStartup,
   readLyricsAlignment,
   readLyricsEnabled,
@@ -88,7 +88,7 @@ import {
   readWindowMode,
   updateSettings,
   type ColorMode,
-  type ControlPosition,
+  type ElementAlignment,
   type LyricsAlignment,
   type ProgressColorSource,
   type ProgressStyle,
@@ -109,6 +109,7 @@ import {
   type WindowsVersion,
 } from '@/lib/taskbar-diagnostics-api'
 import { getTaskbarMonitors, type TaskbarMonitor } from '@/lib/taskbar-monitor-api'
+import { cn } from '@/lib/utils'
 import { readCurrentWindowLabel } from '@/lib/window-label'
 import type { RuntimeInfo } from '@/types/runtime-info'
 
@@ -158,7 +159,7 @@ const targetMonitorSelection = computed(() => {
 })
 const currentColorMode = computed(() => readColorMode(settings.value))
 const showControls = computed(() => readShowControls(settings.value))
-const currentControlPosition = computed(() => readControlPosition(settings.value))
+const currentElementAlignment = computed(() => readElementAlignment(settings.value))
 const showProgress = computed(() => readShowProgress(settings.value))
 const currentProgressStyle = computed(() => readProgressStyle(settings.value))
 const currentProgressColorSource = computed(() => readProgressColorSource(settings.value))
@@ -178,6 +179,19 @@ const previewAccentColor = computed(() => {
   }
   return mediaSnapshot.value?.accentColor || '#0078D4'
 })
+const previewLayoutClass = computed(() =>
+  cn(
+    'bg-card text-card-foreground relative flex h-14 w-full max-w-md items-center gap-3 overflow-hidden rounded-xl border px-3 shadow-sm',
+    {
+      'flex-row-reverse': currentElementAlignment.value === 'right',
+    },
+  ),
+)
+const previewTextClass = computed(() =>
+  cn('relative min-w-0 flex-1', {
+    'text-right': currentElementAlignment.value === 'right',
+  }),
+)
 const recentErrors = computed(() =>
   [
     runtimeError.value,
@@ -220,9 +234,9 @@ const progressStyleOptions: ReadonlyArray<{ value: ProgressStyle; label: string 
   { value: 'underline', label: '底部细线' },
   { value: 'background-gradient', label: '背景渐变' },
 ]
-const controlPositionOptions: ReadonlyArray<{ value: ControlPosition; label: string }> = [
-  { value: 'left', label: '左侧' },
-  { value: 'right', label: '右侧' },
+const elementAlignmentOptions: ReadonlyArray<{ value: ElementAlignment; label: string }> = [
+  { value: 'left', label: '居左' },
+  { value: 'right', label: '居右' },
 ]
 const progressColorSourceOptions: ReadonlyArray<{
   value: ProgressColorSource
@@ -338,7 +352,7 @@ function handleProgressStyleChange(progressStyle: unknown): void {
     void saveSettingsPatch({ progressStyle })
 }
 
-/** 保存控制按钮显隐状态；隐藏时仍保留按钮位置偏好。 */
+/** 保存控制按钮显隐状态。 */
 function handleShowControlsChange(show: boolean): void {
   if (show !== showControls.value) void saveSettingsPatch({ showControls: show })
 }
@@ -358,10 +372,13 @@ function handleLyricsAlignmentChange(alignment: unknown): void {
   }
 }
 
-/** 接收单选组的未知值，只保存合法的控制按钮位置。 */
-function handleControlPositionChange(position: unknown): void {
-  if ((position === 'left' || position === 'right') && position !== currentControlPosition.value) {
-    void saveSettingsPatch({ controlPosition: position })
+/** 接收单选组的未知值，只保存合法的整体元素对齐方式。 */
+function handleElementAlignmentChange(alignment: unknown): void {
+  if (
+    (alignment === 'left' || alignment === 'right') &&
+    alignment !== currentElementAlignment.value
+  ) {
+    void saveSettingsPatch({ elementAlignment: alignment })
   }
 }
 
@@ -869,7 +886,7 @@ onBeforeUnmount(() => {
           <Card>
             <CardHeader>
               <CardTitle>控制按钮</CardTitle>
-              <CardDescription>控制播放按钮是否出现，以及它们位于 Bar 的哪一侧。</CardDescription>
+              <CardDescription>控制上一曲、播放/暂停和下一曲按钮是否出现。</CardDescription>
             </CardHeader>
             <CardContent>
               <FieldGroup>
@@ -885,17 +902,29 @@ onBeforeUnmount(() => {
                     @update:model-value="handleShowControlsChange"
                   />
                 </Field>
-                <Field :data-disabled="!showControls">
-                  <FieldLabel>按钮位置</FieldLabel>
+              </FieldGroup>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>元素对齐</CardTitle>
+              <CardDescription>
+                居右时整体镜像排列，封面位于最右侧，媒体文字和歌词向左展开。
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <FieldGroup>
+                <Field>
+                  <FieldLabel>排列方向</FieldLabel>
                   <ToggleGroup
                     type="single"
                     variant="outline"
-                    :model-value="currentControlPosition"
-                    :disabled="isSavingSettings || !settings || !showControls"
-                    @update:model-value="handleControlPositionChange"
+                    :model-value="currentElementAlignment"
+                    :disabled="isSavingSettings || !settings"
+                    @update:model-value="handleElementAlignmentChange"
                   >
                     <ToggleGroupItem
-                      v-for="option in controlPositionOptions"
+                      v-for="option in elementAlignmentOptions"
                       :key="option.value"
                       :value="option.value"
                     >
@@ -1003,9 +1032,7 @@ onBeforeUnmount(() => {
                 </Field>
               </FieldGroup>
               <div class="bg-muted flex min-h-36 items-center justify-center rounded-xl border p-6">
-                <div
-                  class="bg-card text-card-foreground relative flex h-14 w-full max-w-md items-center gap-3 overflow-hidden rounded-xl border px-3 shadow-sm"
-                >
+                <div :class="previewLayoutClass">
                   <div
                     v-if="showProgress && currentProgressStyle === 'background-gradient'"
                     class="pointer-events-none absolute inset-y-0 left-0 w-3/5"
@@ -1013,13 +1040,6 @@ onBeforeUnmount(() => {
                       background: `linear-gradient(90deg, transparent, color-mix(in srgb, ${previewAccentColor} 42%, transparent))`,
                     }"
                   />
-                  <div
-                    v-if="showControls && currentControlPosition === 'left'"
-                    class="relative shrink-0 text-sm"
-                    aria-hidden="true"
-                  >
-                    ◀　Ⅱ　▶
-                  </div>
                   <Avatar class="relative size-10 rounded-md">
                     <AvatarImage
                       v-if="mediaSnapshot?.artworkDataUrl"
@@ -1029,7 +1049,7 @@ onBeforeUnmount(() => {
                       <Music2Icon class="size-4" />
                     </AvatarFallback>
                   </Avatar>
-                  <div class="relative min-w-0 flex-1">
+                  <div :class="previewTextClass">
                     <p class="truncate text-sm font-medium">
                       {{ mediaSnapshot?.title || 'Muse Bar 预览' }}
                     </p>
@@ -1037,11 +1057,7 @@ onBeforeUnmount(() => {
                       {{ mediaSnapshot?.artist || '当前歌曲歌手' }}
                     </p>
                   </div>
-                  <div
-                    v-if="showControls && currentControlPosition === 'right'"
-                    class="relative shrink-0 text-sm"
-                    aria-hidden="true"
-                  >
+                  <div v-if="showControls" class="relative shrink-0 text-sm" aria-hidden="true">
                     ◀　Ⅱ　▶
                   </div>
                   <div

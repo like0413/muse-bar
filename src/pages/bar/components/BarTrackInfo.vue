@@ -12,6 +12,7 @@ import {
 
 import type { CurrentPlaybackStatus, CurrentTimeline } from '@/lib/media-api'
 import {
+  readElementAlignment,
   readTitleScrollEnabled,
   readTitleScrollMode,
   readTitleScrollSpeed,
@@ -57,11 +58,18 @@ const displayArtist = computed(() => snapshot.value?.artist ?? '')
 const titleScrollEnabled = computed(() => readTitleScrollEnabled(settings.value))
 const titleScrollSpeed = computed(() => readTitleScrollSpeed(settings.value))
 const titleScrollMode = computed(() => readTitleScrollMode(settings.value))
+const elementAlignment = computed(() => readElementAlignment(settings.value))
 const titleTrackClass = computed(() =>
   cn(
     'text-sm font-medium',
     isTitleScrolling.value ? 'inline-flex max-w-none whitespace-nowrap' : 'block w-full truncate',
+    elementAlignment.value === 'right' && (isTitleScrolling.value ? 'ml-auto' : 'text-right'),
   ),
+)
+const artistClass = computed(() =>
+  cn('text-muted-foreground truncate text-xs font-normal', {
+    'text-right': elementAlignment.value === 'right',
+  }),
 )
 const metadataDetails = computed(() => {
   const media = snapshot.value
@@ -268,11 +276,7 @@ onBeforeUnmount(() => {
         >
       </p>
     </div>
-    <p
-      v-if="displayArtist"
-      data-bar-artist
-      class="text-muted-foreground truncate text-xs font-normal"
-    >
+    <p v-if="displayArtist" data-bar-artist :class="artistClass">
       {{ displayArtist }}
     </p>
   </div>

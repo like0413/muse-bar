@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Runtime};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
-const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 11;
+const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 12;
 const DEFAULT_MAX_WIDTH: u32 = 380;
 const MINIMUM_ALLOWED_MAX_WIDTH: u32 = 200;
 const ALLOWED_MAX_WIDTH: u32 = 520;
@@ -83,10 +83,10 @@ pub enum TitleScrollMode {
     Bounce,
 }
 
-/// 播放控制按钮在 Bar 内容中的排列位置。
+/// 封面、媒体文字、歌词和控制按钮在 Bar 中的整体排列方向。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ControlPosition {
+pub enum ElementAlignment {
     Left,
     Right,
 }
@@ -112,7 +112,7 @@ pub struct AppSettings {
     pub max_width: u32,
     pub manual_offset: i32,
     pub show_controls: bool,
-    pub control_position: ControlPosition,
+    pub element_alignment: ElementAlignment,
     pub show_progress: bool,
     pub progress_style: ProgressStyle,
     pub progress_color_source: ProgressColorSource,
@@ -137,7 +137,7 @@ impl Default for AppSettings {
             max_width: DEFAULT_MAX_WIDTH,
             manual_offset: 0,
             show_controls: true,
-            control_position: ControlPosition::Right,
+            element_alignment: ElementAlignment::Left,
             show_progress: true,
             progress_style: ProgressStyle::Underline,
             progress_color_source: ProgressColorSource::Artwork,

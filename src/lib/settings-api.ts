@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 export type SettingsPayload = Record<string, unknown>
 export type ColorMode = 'system' | 'dark' | 'light'
-export type ControlPosition = 'left' | 'right'
+export type ElementAlignment = 'left' | 'right'
 export type LyricsAlignment = 'left' | 'center' | 'right'
 export type ProgressColorSource = 'artwork' | 'system' | 'custom'
 export type ProgressStyle = 'underline' | 'background-gradient'
@@ -72,9 +72,9 @@ export function readShowControls(settings: SettingsPayload | undefined): boolean
   return settings?.showControls !== false
 }
 
-/** 从设置载荷中读取控制按钮位置，异常值回退到 Bar 右侧。 */
-export function readControlPosition(settings: SettingsPayload | undefined): ControlPosition {
-  return settings?.controlPosition === 'left' ? 'left' : 'right'
+/** 从设置载荷中读取整体元素对齐方式，旧设置默认从左向右排列。 */
+export function readElementAlignment(settings: SettingsPayload | undefined): ElementAlignment {
+  return settings?.elementAlignment === 'right' ? 'right' : 'left'
 }
 
 /** 从设置载荷中读取标题滚动开关，旧设置缺少字段时默认开启。 */

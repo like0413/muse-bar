@@ -12,7 +12,8 @@ import {
 } from 'vue'
 
 import { reportBarContentWidth } from '@/lib/bar-layout-api'
-import { readControlPosition, readLyricsEnabled, readShowControls } from '@/lib/settings-api'
+import { readElementAlignment, readLyricsEnabled, readShowControls } from '@/lib/settings-api'
+import { cn } from '@/lib/utils'
 
 import { useBarStore } from '../bar-store'
 import BarArtwork from './BarArtwork.vue'
@@ -33,7 +34,12 @@ const activeContent = computed(() => (lyricsEnabled.value && !isHovered.value ? 
 const showMediaControls = computed(
   () => activeContent.value === 'media' && readShowControls(settings.value),
 )
-const controlPosition = computed(() => readControlPosition(settings.value))
+const elementAlignment = computed(() => readElementAlignment(settings.value))
+const contentClass = computed(() =>
+  cn('absolute inset-y-0 right-2 left-2 z-10 flex items-center gap-2', {
+    'flex-row-reverse': elementAlignment.value === 'right',
+  }),
+)
 const barPageElement = useTemplateRef<HTMLElement>('barPage')
 const barSurfaceElement = useTemplateRef<HTMLElement>('barSurface')
 const contentInitial = { opacity: 0, y: 2 }
@@ -181,8 +187,7 @@ onBeforeUnmount(() => {
       @mouseleave="isHovered = false"
     >
       <BarProgress />
-      <div data-bar-content class="absolute inset-y-0 right-2 left-2 z-10 flex items-center gap-2">
-        <BarMediaControls v-if="showMediaControls && controlPosition === 'left'" />
+      <div data-bar-content :class="contentClass">
         <BarArtwork />
         <div class="relative h-full min-w-0 flex-1">
           <AnimatePresence :initial="false" mode="sync">
@@ -199,7 +204,7 @@ onBeforeUnmount(() => {
             </motion.div>
           </AnimatePresence>
         </div>
-        <BarMediaControls v-if="showMediaControls && controlPosition === 'right'" />
+        <BarMediaControls v-if="showMediaControls" />
       </div>
     </section>
   </main>
