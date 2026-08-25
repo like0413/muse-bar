@@ -58,19 +58,19 @@ pub fn report_bar_content_width(
     };
     let (animation_revision, latest_animation_revision) = state.begin_bar_width_animation();
 
-    child_host::animate_window_width(
+    child_host::animate_window_width(child_host::WindowWidthAnimationRequest {
         bar_window,
         bar_webview,
-        &taskbar,
-        &taskbar_rect,
-        &taskbar_dpi,
-        settings.position,
-        settings.manual_offset,
-        available_span.map(|span| span.left()),
-        target_physical_width,
+        taskbar: &taskbar,
+        taskbar_rect: &taskbar_rect,
+        taskbar_dpi: &taskbar_dpi,
+        position: settings.position,
+        manual_offset: settings.manual_offset,
+        preferred_screen_x: available_span.map(|span| span.left()),
+        target_width: target_physical_width,
         animation_revision,
         latest_animation_revision,
-    )?;
+    })?;
 
     Ok(measurement)
 }

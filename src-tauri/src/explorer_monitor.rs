@@ -174,19 +174,19 @@ fn synchronize_lyrics_taskbar_layout(
         .max(1.0) as u32;
     state.report_bar_content_width(1.0, Some(logical_width))?;
     let (animation_revision, latest_animation_revision) = state.begin_bar_width_animation();
-    child_host::animate_window_width(
+    child_host::animate_window_width(child_host::WindowWidthAnimationRequest {
         bar_window,
         bar_webview,
-        &taskbar,
-        &taskbar_rect,
-        &taskbar_dpi,
-        settings.position,
-        settings.manual_offset,
-        Some(positioning_span.left()),
-        positioning_span.width(),
+        taskbar: &taskbar,
+        taskbar_rect: &taskbar_rect,
+        taskbar_dpi: &taskbar_dpi,
+        position: settings.position,
+        manual_offset: settings.manual_offset,
+        preferred_screen_x: Some(positioning_span.left()),
+        target_width: positioning_span.width(),
         animation_revision,
         latest_animation_revision,
-    )?;
+    })?;
     *previous_layout = Some(current_layout);
     *pending_layout = None;
 

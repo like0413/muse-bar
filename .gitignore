@@ -38,4 +38,5 @@ dist-ssr
 .env.*
 
 .trae/
-docs/
+docs/*
+!docs/Muse Bar 全面优化路线图.md

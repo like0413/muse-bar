@@ -55,6 +55,7 @@ vp exec tauri build
 ## 文档
 
 - [架构、目录与数据流](docs/architecture.md)
+- [全面优化路线图与实施优先级](docs/Muse%20Bar%20全面优化路线图.md)
 - [原始模板验证记录](docs/baseline.md)
 - [Child 任务栏宿主技术闸门](docs/child-host-validation.md)
 

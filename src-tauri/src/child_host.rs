@@ -35,6 +35,21 @@ pub(crate) struct ChildHostSize {
     pub(crate) height: u32,
 }
 
+/// 一次 Bar 宽度动画所需的窗口、任务栏布局和取消版本信息。
+pub(crate) struct WindowWidthAnimationRequest<'a, R: Runtime> {
+    pub(crate) bar_window: Window<R>,
+    pub(crate) bar_webview: Webview<R>,
+    pub(crate) taskbar: &'a TaskbarIdentity,
+    pub(crate) taskbar_rect: &'a TaskbarRect,
+    pub(crate) taskbar_dpi: &'a TaskbarDpi,
+    pub(crate) position: TaskbarPosition,
+    pub(crate) manual_offset: i32,
+    pub(crate) preferred_screen_x: Option<i32>,
+    pub(crate) target_width: i32,
+    pub(crate) animation_revision: u64,
+    pub(crate) latest_animation_revision: Arc<AtomicU64>,
+}
+
 /// 判断 Tauri 保存的 Bar 句柄是否仍对应当前进程中的有效窗口。
 pub(crate) fn is_window_alive<R: Runtime>(bar_window: &Window<R>) -> bool {
     let Ok(handle) = bar_window.hwnd() else {
@@ -116,18 +131,22 @@ pub(crate) fn hide_window<R: Runtime>(bar_window: &Window<R>) -> Result<(), Stri
 /// 缩短时保留平滑动画；增长时一次完成。WebView2 的合成表面晚于原生父窗口扩展，
 /// 逐帧增长会反复暴露尚未绘制的新区域，形成白色拖影。
 pub(crate) fn animate_window_width<R: Runtime>(
-    bar_window: Window<R>,
-    bar_webview: Webview<R>,
-    taskbar: &TaskbarIdentity,
-    taskbar_rect: &TaskbarRect,
-    taskbar_dpi: &TaskbarDpi,
-    position: TaskbarPosition,
-    manual_offset: i32,
-    preferred_screen_x: Option<i32>,
-    target_width: i32,
-    animation_revision: u64,
-    latest_animation_revision: Arc<AtomicU64>,
+    request: WindowWidthAnimationRequest<'_, R>,
 ) -> Result<(), String> {
+    let WindowWidthAnimationRequest {
+        bar_window,
+        bar_webview,
+        taskbar,
+        taskbar_rect,
+        taskbar_dpi,
+        position,
+        manual_offset,
+        preferred_screen_x,
+        target_width,
+        animation_revision,
+        latest_animation_revision,
+    } = request;
+
     if target_width <= 0 {
         return Err("Bar 目标物理宽度必须大于零".to_owned());
     }
