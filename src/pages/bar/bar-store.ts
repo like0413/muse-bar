@@ -176,7 +176,9 @@ export const useBarStore = defineStore('bar', () => {
   async function start(): Promise<void> {
     if (isActive) return
     isActive = true
-    await Promise.all([startSnapshotListener(), startSelectionListener(), startSettingsListener()])
+    // 冷启动时先选择并绑定实际媒体会话，再读取初始快照，避免暂时为空的缓存触发隐藏。
+    await startSelectionListener()
+    await Promise.all([startSnapshotListener(), startSettingsListener()])
   }
 
   /** 销毁 Bar 页面建立的全部监听器。 */

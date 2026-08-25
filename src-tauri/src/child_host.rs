@@ -35,6 +35,13 @@ pub(crate) struct ChildHostSize {
     pub(crate) height: u32,
 }
 
+/// Bar 挂载到任务栏时使用的布局与初始可见性选项。
+pub(crate) struct AttachWindowOptions {
+    pub(crate) position: TaskbarPosition,
+    pub(crate) manual_offset: i32,
+    pub(crate) should_show: bool,
+}
+
 /// 一次 Bar 宽度动画所需的窗口、任务栏布局和取消版本信息。
 pub(crate) struct WindowWidthAnimationRequest<'a, R: Runtime> {
     pub(crate) bar_window: Window<R>,
@@ -88,8 +95,7 @@ pub(crate) fn attach_window<R: Runtime>(
     taskbar: &TaskbarIdentity,
     taskbar_rect: &TaskbarRect,
     taskbar_dpi: &TaskbarDpi,
-    position: TaskbarPosition,
-    manual_offset: i32,
+    options: AttachWindowOptions,
 ) -> Result<ChildHostSize, String> {
     let bar_handle = bar_window
         .hwnd()
@@ -105,8 +111,7 @@ pub(crate) fn attach_window<R: Runtime>(
         taskbar,
         taskbar_rect,
         taskbar_dpi,
-        position,
-        manual_offset,
+        options,
     )?;
 
     Ok(ChildHostSize {
@@ -342,9 +347,13 @@ fn attach_to_taskbar<R: Runtime>(
     taskbar: &TaskbarIdentity,
     taskbar_rect: &TaskbarRect,
     taskbar_dpi: &TaskbarDpi,
-    position: TaskbarPosition,
-    manual_offset: i32,
+    options: AttachWindowOptions,
 ) -> Result<(i32, i32), String> {
+    let AttachWindowOptions {
+        position,
+        manual_offset,
+        should_show,
+    } = options;
     let (bar_width, bar_height) = read_window_size(bar_handle)?;
 
     if bar_width > taskbar_rect.width() || bar_height > taskbar_rect.height() {
@@ -394,6 +403,11 @@ fn attach_to_taskbar<R: Runtime>(
         ));
     }
 
+    let mut position_flags = SWP_NOACTIVATE | SWP_FRAMECHANGED;
+    if should_show {
+        position_flags |= SWP_SHOWWINDOW;
+    }
+
     unsafe {
         SetWindowPos(
             bar_handle,
@@ -402,7 +416,7 @@ fn attach_to_taskbar<R: Runtime>(
             client_position.y,
             bar_width,
             bar_height,
-            SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+            position_flags,
         )
     }
     .map_err(|error| format!("无法在任务栏客户区中放置 Bar：{error}"))?;
@@ -484,7 +498,7 @@ fn schedule_position_stabilization<R: Runtime>(
                             position.y,
                             width,
                             height,
-                            SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+                            SWP_NOACTIVATE | SWP_FRAMECHANGED,
                         )
                     };
                     if let Err(error) = positioned {

@@ -465,9 +465,26 @@ fn select_and_bind_media_session<R: Runtime>(
 
     if selected_key != observed_key {
         bind_media_session(selected_session, app, observation, media_metadata_loader)?;
+    } else if should_retry_media_metadata(
+        selected_key,
+        observed_key,
+        media_metadata_loader.cached()?.is_some(),
+    ) {
+        if let Some(session) = selected_session.as_ref() {
+            media_metadata_loader.request(session);
+        }
     }
 
     Ok(selection)
+}
+
+/// 同一会话已绑定但元数据仍为空时重新请求，避免冷启动瞬时失败后永久保持空快照。
+fn should_retry_media_metadata(
+    selected_key: Option<u64>,
+    observed_key: Option<u64>,
+    has_cached_metadata: bool,
+) -> bool {
+    selected_key.is_some() && selected_key == observed_key && !has_cached_metadata
 }
 
 /// 注册会话列表变化事件，并将最新 Source App ID 广播给所有前端窗口。
@@ -1237,5 +1254,30 @@ pub(crate) fn identify_media_player(source_app_id: &str) -> MediaPlayerKind {
         MediaPlayerKind::QishuiMusic
     } else {
         MediaPlayerKind::Other
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_retry_media_metadata;
+
+    #[test]
+    fn retry_metadata_should_be_true_when_bound_session_cache_is_empty() {
+        assert!(should_retry_media_metadata(Some(42), Some(42), false));
+    }
+
+    #[test]
+    fn retry_metadata_should_be_false_when_bound_session_cache_exists() {
+        assert!(!should_retry_media_metadata(Some(42), Some(42), true));
+    }
+
+    #[test]
+    fn retry_metadata_should_be_false_when_no_session_is_selected() {
+        assert!(!should_retry_media_metadata(None, None, false));
+    }
+
+    #[test]
+    fn retry_metadata_should_be_false_when_session_requires_rebinding() {
+        assert!(!should_retry_media_metadata(Some(42), Some(7), false));
     }
 }

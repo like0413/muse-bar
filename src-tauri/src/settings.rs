@@ -1,17 +1,20 @@
 use std::{
-    error::Error,
-    fs::{self, File},
+    fs::{self, OpenOptions},
     io::{self, ErrorKind, Write},
     path::{Path, PathBuf},
     process,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tauri::{AppHandle, Manager, Runtime};
+use thiserror::Error;
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 12;
+const MAXIMUM_CORRUPTED_SETTINGS_BACKUPS: usize = 3;
 const DEFAULT_MAX_WIDTH: u32 = 380;
 const MINIMUM_ALLOWED_MAX_WIDTH: u32 = 200;
 const ALLOWED_MAX_WIDTH: u32 = 520;
@@ -22,6 +25,25 @@ const DEFAULT_TARGET_MONITOR: &str = "primary";
 const DEFAULT_CUSTOM_PROGRESS_COLOR: &str = "#0078D4";
 const MINIMUM_MANUAL_OFFSET: i32 = -200;
 const MAXIMUM_MANUAL_OFFSET: i32 = 200;
+static SETTINGS_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Error)]
+pub(crate) enum SettingsPersistenceError {
+    #[error("设置文件 I/O 失败：{0}")]
+    Io(#[from] io::Error),
+    #[error("设置 JSON 处理失败：{0}")]
+    Json(#[from] serde_json::Error),
+    #[error("无法定位应用配置目录：{0}")]
+    AppPath(#[from] tauri::Error),
+    #[error("无法确定设置文件所在目录")]
+    MissingParentDirectory,
+    #[error("设置版本 {found} 高于当前程序支持的版本 {supported}，已停止加载以避免覆盖新版本配置")]
+    UnsupportedSchemaVersion { found: u64, supported: u32 },
+    #[error("schemaVersion 必须是非负整数")]
+    InvalidSchemaVersion,
+    #[error("设置写入后的校验结果与待保存内容不一致")]
+    VerificationMismatch,
+}
 
 /// Bar 窗口与 Windows 任务栏之间的宿主模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,69 +177,97 @@ impl Default for AppSettings {
 
 impl AppSettings {
     /// 从应用配置目录读取设置；首次启动尚无设置文件时返回默认值。
-    pub fn load<R: Runtime>(app: &AppHandle<R>) -> Result<Self, Box<dyn Error>> {
-        let settings_path = settings_file_path(app)?;
+    pub fn load<R: Runtime>(app: &AppHandle<R>) -> Result<Self, SettingsPersistenceError> {
+        Self::load_from_path(&settings_file_path(app)?)
+    }
 
-        let contents = match fs::read_to_string(&settings_path) {
+    fn load_from_path(settings_path: &Path) -> Result<Self, SettingsPersistenceError> {
+        cleanup_stale_temporary_files(settings_path);
+
+        let contents = match fs::read_to_string(settings_path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Self::default()),
             Err(error) => return Err(error.into()),
         };
 
-        match serde_json::from_str::<Self>(&contents) {
+        match deserialize_settings(&contents) {
             Ok(mut settings) => {
-                let migrated = settings.migrate();
-                let maximum_width_normalized = settings.normalize_maximum_width();
-                let title_scroll_speed_normalized = settings.normalize_title_scroll_speed();
-                let positioning_normalized = settings.normalize_positioning();
-                let progress_color_normalized = settings.normalize_custom_progress_color();
-                if migrated
-                    || maximum_width_normalized
-                    || title_scroll_speed_normalized
-                    || positioning_normalized
-                    || progress_color_normalized
-                {
-                    // 迁移写回失败不应阻止启动；本次运行仍使用迁移后的内存设置。
-                    let _ = settings.save(app);
+                if settings.prepare_for_persistence()? {
+                    // 写回失败不阻止启动，本次运行仍使用已经迁移和归一化的内存值。
+                    if let Err(error) = settings.save_to_path(settings_path) {
+                        log::warn!("设置迁移或归一化结果无法写回：{error}");
+                    }
                 }
                 Ok(settings)
             }
-            Err(_) => {
-                preserve_corrupted_file(&settings_path);
+            Err(error @ SettingsPersistenceError::UnsupportedSchemaVersion { .. }) => Err(error),
+            Err(error) => {
+                let backup_path = preserve_corrupted_file(settings_path)?;
+                log::warn!(
+                    "设置文件无法解析，已备份至 {} 并恢复默认值：{error}",
+                    backup_path.display()
+                );
                 Ok(Self::default())
             }
         }
     }
 
     /// 将设置完整写入临时文件，再用它替换正式设置文件。
-    pub fn save<R: Runtime>(&self, app: &AppHandle<R>) -> Result<(), Box<dyn Error>> {
-        let settings_path = settings_file_path(app)?;
+    pub fn save<R: Runtime>(&self, app: &AppHandle<R>) -> Result<(), SettingsPersistenceError> {
+        self.save_to_path(&settings_file_path(app)?)
+    }
+
+    fn save_to_path(&self, settings_path: &Path) -> Result<(), SettingsPersistenceError> {
+        if u64::from(self.schema_version) > u64::from(CURRENT_SETTINGS_SCHEMA_VERSION) {
+            return Err(SettingsPersistenceError::UnsupportedSchemaVersion {
+                found: u64::from(self.schema_version),
+                supported: CURRENT_SETTINGS_SCHEMA_VERSION,
+            });
+        }
+
         let config_directory = settings_path
             .parent()
-            .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "无法确定设置文件所在目录"))?;
+            .ok_or(SettingsPersistenceError::MissingParentDirectory)?;
         fs::create_dir_all(config_directory)?;
 
         // 先在内存中完成序列化，避免序列化失败时留下不完整的临时文件。
         let serialized_settings = serde_json::to_vec_pretty(self)?;
-        let temporary_path = temporary_settings_path(config_directory);
-        write_temporary_settings(&temporary_path, &serialized_settings)?;
+        let temporary_path = write_temporary_settings(config_directory, &serialized_settings)?;
 
-        if let Err(error) = fs::rename(&temporary_path, &settings_path) {
+        if let Err(error) = fs::rename(&temporary_path, settings_path) {
             let _ = fs::remove_file(&temporary_path);
             return Err(error.into());
+        }
+
+        let persisted_settings: Self = serde_json::from_slice(&fs::read(settings_path)?)?;
+        if persisted_settings != *self {
+            return Err(SettingsPersistenceError::VerificationMismatch);
         }
 
         Ok(())
     }
 
-    /// 按设置版本执行一次性迁移，并返回本次是否修改了内容。
-    fn migrate(&mut self) -> bool {
-        if self.schema_version >= CURRENT_SETTINGS_SCHEMA_VERSION {
-            return false;
+    /// 执行真实结构迁移和边界归一化；新增可选字段不需要提升 schema 版本。
+    pub(crate) fn prepare_for_persistence(&mut self) -> Result<bool, SettingsPersistenceError> {
+        if self.schema_version > CURRENT_SETTINGS_SCHEMA_VERSION {
+            return Err(SettingsPersistenceError::UnsupportedSchemaVersion {
+                found: u64::from(self.schema_version),
+                supported: CURRENT_SETTINGS_SCHEMA_VERSION,
+            });
         }
 
-        self.schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
-        true
+        let migrated = if self.schema_version < CURRENT_SETTINGS_SCHEMA_VERSION {
+            self.schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
+            true
+        } else {
+            false
+        };
+
+        Ok(self.normalize_maximum_width()
+            | self.normalize_title_scroll_speed()
+            | self.normalize_positioning()
+            | self.normalize_custom_progress_color()
+            | migrated)
     }
 
     /// 将普通模式的最大宽度限制在设置页允许的产品范围内。
@@ -284,46 +334,357 @@ fn initial_settings_schema_version() -> u32 {
     1
 }
 
+fn deserialize_settings(contents: &str) -> Result<AppSettings, SettingsPersistenceError> {
+    let document: Value = serde_json::from_str(contents)?;
+    let schema_version = match document.get("schemaVersion") {
+        Some(Value::Number(version)) => version
+            .as_u64()
+            .ok_or(SettingsPersistenceError::InvalidSchemaVersion)?,
+        Some(_) => return Err(SettingsPersistenceError::InvalidSchemaVersion),
+        None => u64::from(initial_settings_schema_version()),
+    };
+
+    if schema_version > u64::from(CURRENT_SETTINGS_SCHEMA_VERSION) {
+        return Err(SettingsPersistenceError::UnsupportedSchemaVersion {
+            found: schema_version,
+            supported: CURRENT_SETTINGS_SCHEMA_VERSION,
+        });
+    }
+
+    Ok(serde_json::from_value(document)?)
+}
+
 /// 返回当前应用专属配置目录中的设置文件路径。
 fn settings_file_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, tauri::Error> {
     Ok(app.path().app_config_dir()?.join(SETTINGS_FILE_NAME))
 }
 
-/// 为本次进程生成与正式文件同目录的临时设置文件路径。
-fn temporary_settings_path(config_directory: &Path) -> PathBuf {
-    config_directory.join(format!("settings.{}.tmp", process::id()))
+fn unique_file_suffix() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let sequence = SETTINGS_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("{timestamp}-{}-{sequence}", process::id())
 }
 
 /// 写入并同步临时设置文件；失败时清理可能存在的不完整文件。
-fn write_temporary_settings(path: &Path, contents: &[u8]) -> io::Result<()> {
+fn write_temporary_settings(config_directory: &Path, contents: &[u8]) -> io::Result<PathBuf> {
+    let path = config_directory.join(format!("settings.{}.tmp", unique_file_suffix()));
     let write_result = (|| {
-        let mut file = File::create(path)?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
         file.write_all(contents)?;
         file.sync_all()?;
-        Ok(())
+        Ok(path.clone())
     })();
 
     if write_result.is_err() {
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     write_result
 }
 
-/// 尝试为损坏的设置文件生成不会覆盖正常配置的备份名称。
-fn corrupted_settings_path(settings_path: &Path) -> PathBuf {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis());
+fn cleanup_stale_temporary_files(settings_path: &Path) {
+    let Some(config_directory) = settings_path.parent() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(config_directory) else {
+        return;
+    };
 
-    settings_path.with_file_name(format!(
-        "settings.corrupted-{timestamp}-{}.json",
-        process::id()
-    ))
+    for path in entries.filter_map(Result::ok).map(|entry| entry.path()) {
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if file_name.starts_with("settings.")
+            && file_name.ends_with(".tmp")
+            && fs::remove_file(&path).is_err()
+        {
+            log::warn!("无法清理残留设置临时文件：{}", path.display());
+        }
+    }
 }
 
-/// 尝试移动损坏文件；移动失败时保留原文件并继续使用默认设置启动。
-fn preserve_corrupted_file(settings_path: &Path) {
+/// 尝试为损坏的设置文件生成不会覆盖正常配置的备份名称。
+fn corrupted_settings_path(settings_path: &Path) -> PathBuf {
+    settings_path.with_file_name(format!("settings.corrupted-{}.json", unique_file_suffix()))
+}
+
+/// 移动损坏文件并只保留最近几份，避免无限占用用户配置目录。
+fn preserve_corrupted_file(settings_path: &Path) -> Result<PathBuf, SettingsPersistenceError> {
     let corrupted_path = corrupted_settings_path(settings_path);
-    let _ = fs::rename(settings_path, corrupted_path);
+    fs::rename(settings_path, &corrupted_path)?;
+    prune_corrupted_settings_backups(settings_path);
+    Ok(corrupted_path)
+}
+
+fn prune_corrupted_settings_backups(settings_path: &Path) {
+    let Some(config_directory) = settings_path.parent() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(config_directory) else {
+        return;
+    };
+    let mut backups = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with("settings.corrupted-") && name.ends_with(".json")
+                })
+        })
+        .collect::<Vec<_>>();
+    backups.sort_unstable_by(|left, right| right.file_name().cmp(&left.file_name()));
+
+    for path in backups.into_iter().skip(MAXIMUM_CORRUPTED_SETTINGS_BACKUPS) {
+        if fs::remove_file(&path).is_err() {
+            log::warn!("无法清理旧的损坏设置备份：{}", path.display());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "muse-bar-settings-{label}-{}",
+                unique_file_suffix()
+            ));
+            fs::create_dir_all(&path).expect("测试配置目录应能创建");
+            Self(path)
+        }
+
+        fn settings_path(&self) -> PathBuf {
+            self.0.join(SETTINGS_FILE_NAME)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn save_to_path_should_replace_existing_settings_file() {
+        let directory = TestDirectory::new("replace-existing");
+        let settings_path = directory.settings_path();
+        fs::write(&settings_path, b"old contents").expect("旧设置文件应能写入");
+        let settings = AppSettings {
+            max_width: 412,
+            ..AppSettings::default()
+        };
+
+        settings
+            .save_to_path(&settings_path)
+            .expect("已有设置文件应能被原子替换");
+
+        let persisted: AppSettings =
+            serde_json::from_slice(&fs::read(settings_path).expect("替换后的设置文件应能读取"))
+                .expect("替换后的设置应为有效 JSON");
+        assert_eq!(persisted.max_width, 412);
+    }
+
+    #[test]
+    fn save_to_path_should_leave_no_temporary_file_after_success() {
+        let directory = TestDirectory::new("no-temporary-file");
+
+        AppSettings::default()
+            .save_to_path(&directory.settings_path())
+            .expect("默认设置应能保存");
+
+        let has_temporary_file = fs::read_dir(&directory.0)
+            .expect("测试配置目录应能读取")
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"));
+        assert!(!has_temporary_file, "保存成功后不应残留临时文件");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_to_path_should_preserve_existing_file_when_replacement_is_blocked() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let directory = TestDirectory::new("blocked-replacement-preserves-original");
+        let settings_path = directory.settings_path();
+        fs::write(&settings_path, b"original contents").expect("原设置文件应能写入");
+        let locked_file = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&settings_path)
+            .expect("原设置文件应能被独占打开");
+
+        let result = AppSettings::default().save_to_path(&settings_path);
+        drop(locked_file);
+
+        assert!(result.is_err(), "目标被占用时保存必须返回错误");
+        assert_eq!(
+            fs::read(settings_path).expect("保存失败后原文件应仍能读取"),
+            b"original contents"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_to_path_should_cleanup_temporary_file_when_replacement_is_blocked() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let directory = TestDirectory::new("blocked-replacement-cleans-temporary");
+        let settings_path = directory.settings_path();
+        fs::write(&settings_path, b"original contents").expect("原设置文件应能写入");
+        let locked_file = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&settings_path)
+            .expect("原设置文件应能被独占打开");
+
+        let _ = AppSettings::default().save_to_path(&settings_path);
+        drop(locked_file);
+
+        let has_temporary_file = fs::read_dir(&directory.0)
+            .expect("测试配置目录应能读取")
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"));
+        assert!(!has_temporary_file, "替换失败后不应残留临时文件");
+    }
+
+    #[test]
+    fn load_from_path_should_remove_stale_temporary_files() {
+        let directory = TestDirectory::new("stale-temporary-file");
+        let stale_path = directory.0.join("settings.stale.tmp");
+        fs::write(&stale_path, b"partial").expect("残留临时文件应能创建");
+
+        AppSettings::load_from_path(&directory.settings_path())
+            .expect("缺少正式设置文件时应使用默认值");
+
+        assert!(!stale_path.exists(), "加载时应清理残留临时文件");
+    }
+
+    #[test]
+    fn load_from_path_should_fill_missing_additive_fields_from_defaults() {
+        let directory = TestDirectory::new("additive-defaults");
+        fs::write(
+            directory.settings_path(),
+            format!(r#"{{"schemaVersion":{CURRENT_SETTINGS_SCHEMA_VERSION},"maxWidth":412}}"#),
+        )
+        .expect("精简设置文件应能写入");
+
+        let settings = AppSettings::load_from_path(&directory.settings_path())
+            .expect("缺少新增字段时应使用默认值");
+
+        assert!(settings.show_controls, "缺少字段应采用当前默认值");
+    }
+
+    #[test]
+    fn load_from_path_should_write_current_schema_after_legacy_load() {
+        let directory = TestDirectory::new("legacy-schema");
+        fs::write(
+            directory.settings_path(),
+            r#"{"schemaVersion":1,"maxWidth":412}"#,
+        )
+        .expect("旧版设置文件应能写入");
+
+        AppSettings::load_from_path(&directory.settings_path()).expect("旧版设置应能迁移");
+
+        let document: Value = serde_json::from_slice(
+            &fs::read(directory.settings_path()).expect("迁移后的设置文件应能读取"),
+        )
+        .expect("迁移后的设置应为有效 JSON");
+        assert_eq!(
+            document.get("schemaVersion").and_then(Value::as_u64),
+            Some(u64::from(CURRENT_SETTINGS_SCHEMA_VERSION))
+        );
+    }
+
+    #[test]
+    fn load_from_path_should_reject_future_schema() {
+        let directory = TestDirectory::new("future-schema-error");
+        let future_version = u64::from(CURRENT_SETTINGS_SCHEMA_VERSION) + 1;
+        fs::write(
+            directory.settings_path(),
+            format!(r#"{{"schemaVersion":{future_version},"futureField":true}}"#),
+        )
+        .expect("未来版本设置文件应能写入");
+
+        let error = AppSettings::load_from_path(&directory.settings_path())
+            .expect_err("未来版本设置必须拒绝加载");
+
+        assert!(matches!(
+            error,
+            SettingsPersistenceError::UnsupportedSchemaVersion { .. }
+        ));
+    }
+
+    #[test]
+    fn load_from_path_should_not_modify_future_schema_file() {
+        let directory = TestDirectory::new("future-schema-preserved");
+        let original = format!(
+            r#"{{"schemaVersion":{},"futureField":true}}"#,
+            CURRENT_SETTINGS_SCHEMA_VERSION + 1
+        );
+        fs::write(directory.settings_path(), &original).expect("未来版本设置文件应能写入");
+
+        let _ = AppSettings::load_from_path(&directory.settings_path());
+
+        let persisted =
+            fs::read_to_string(directory.settings_path()).expect("拒绝加载后原设置文件应仍然存在");
+        assert_eq!(persisted, original);
+    }
+
+    #[test]
+    fn load_from_path_should_backup_invalid_json() {
+        let directory = TestDirectory::new("invalid-json-backup");
+        fs::write(directory.settings_path(), b"not json").expect("损坏设置文件应能写入");
+
+        AppSettings::load_from_path(&directory.settings_path())
+            .expect("损坏设置应备份并恢复默认值");
+
+        let backup_count = corrupted_backup_count(&directory.0);
+        assert_eq!(backup_count, 1);
+    }
+
+    #[test]
+    fn load_from_path_should_keep_at_most_three_corrupted_backups() {
+        let directory = TestDirectory::new("backup-limit");
+        for index in 0..5 {
+            fs::write(
+                directory
+                    .0
+                    .join(format!("settings.corrupted-000{index}.json")),
+                b"old backup",
+            )
+            .expect("旧损坏备份应能写入");
+        }
+        fs::write(directory.settings_path(), b"not json").expect("损坏设置文件应能写入");
+
+        AppSettings::load_from_path(&directory.settings_path())
+            .expect("损坏设置应备份并恢复默认值");
+
+        assert_eq!(
+            corrupted_backup_count(&directory.0),
+            MAXIMUM_CORRUPTED_SETTINGS_BACKUPS
+        );
+    }
+
+    fn corrupted_backup_count(directory: &Path) -> usize {
+        fs::read_dir(directory)
+            .expect("测试配置目录应能读取")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with("settings.corrupted-") && name.ends_with(".json")
+            })
+            .count()
+    }
 }

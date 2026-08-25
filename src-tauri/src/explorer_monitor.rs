@@ -253,13 +253,17 @@ fn recover_bar_once(app: &AppHandle) -> Result<(), String> {
         }
     };
 
+    let should_show = app.state::<AppState>().should_show_bar();
     let host_size = match child_host::attach_window(
         &bar_window,
         &taskbar,
         &taskbar_rect,
         &taskbar_dpi,
-        settings.position,
-        settings.manual_offset,
+        child_host::AttachWindowOptions {
+            position: settings.position,
+            manual_offset: settings.manual_offset,
+            should_show,
+        },
     ) {
         Ok(host_size) => host_size,
         Err(error) => {

@@ -2192,6 +2192,7 @@ dependencies = [
  "tauri-plugin-autostart",
  "tauri-plugin-log",
  "tauri-plugin-single-instance",
+ "thiserror 2.0.20",
  "windows",
 ]
 
