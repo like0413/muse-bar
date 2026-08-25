@@ -4,7 +4,9 @@ import { fileURLToPath, URL } from 'node:url'
 import VueI18nPlugin from '@intlify/unplugin-vue-i18n/vite'
 import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
+import MotionResolver from 'motion-v/resolver'
 import AutoImport from 'unplugin-auto-import/vite'
+import Components from 'unplugin-vue-components/vite'
 import { defineConfig, lazyPlugins } from 'vite-plus'
 
 export default defineConfig({
@@ -95,6 +97,10 @@ export default defineConfig({
     AutoImport({
       imports: ['vue', 'vue-router'],
       dts: true,
+    }),
+    Components({
+      dts: true,
+      resolvers: [MotionResolver()],
     }),
     VueI18nPlugin({
       include: resolve(dirname(fileURLToPath(import.meta.url)), './src/locales/**'),
