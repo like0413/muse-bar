@@ -18,6 +18,9 @@ pub fn update_settings(
     settings: AppSettings,
 ) -> Result<AppSettings, String> {
     let previous_settings = state.settings()?;
+    let taskbar_placement_changed = previous_settings.position != settings.position
+        || previous_settings.target_monitor != settings.target_monitor
+        || previous_settings.manual_offset != settings.manual_offset;
     let launch_on_startup_after_update = settings.launch_on_startup;
     if previous_settings.launch_on_startup != launch_on_startup_after_update {
         crate::autostart::synchronize(&app, launch_on_startup_after_update)?;
@@ -41,6 +44,13 @@ pub fn update_settings(
 
     app.emit(SETTINGS_CHANGED_EVENT, &updated_settings)
         .map_err(|error| format!("设置已保存，但无法广播设置变化：{error}"))?;
+
+    if taskbar_placement_changed {
+        // 原生 Child 的父任务栏和坐标只能由进程级恢复线程统一修改。
+        if let Err(error) = crate::explorer_monitor::request_recovery() {
+            log::warn!("设置已保存，但无法立即更新 Bar 任务栏位置：{error}");
+        }
+    }
 
     Ok(updated_settings)
 }

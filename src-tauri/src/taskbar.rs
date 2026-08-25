@@ -1,20 +1,31 @@
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
 
 use crate::platform::windows::{
-    w, CloseHandle, FindWindowW, GetMonitorInfoW, GetWindowRect, GetWindowThreadProcessId,
-    MonitorFromWindow, OpenProcess, QueryFullProcessImageNameW, HANDLE, HWND, MONITORINFO,
-    MONITORINFOF_PRIMARY, MONITOR_DEFAULTTONULL, PROCESS_NAME_WIN32,
+    w, CloseHandle, FindWindowExW, FindWindowW, GetMonitorInfoW, GetWindowRect,
+    GetWindowThreadProcessId, MonitorFromWindow, OpenProcess, QueryFullProcessImageNameW, HANDLE,
+    HWND, MONITORINFOEXW, MONITORINFOF_PRIMARY, MONITOR_DEFAULTTONULL, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION, PWSTR, RECT,
 };
 
 const PROCESS_PATH_BUFFER_LENGTH: usize = 32_768;
 const WINDOWS_DEFAULT_DPI: f64 = 96.0;
 
-/// 经过 Explorer 进程和主显示器双重校验的主任务栏身份。
+/// 经过 Explorer 进程与所在显示器双重校验的任务栏身份。
 #[derive(Debug)]
 pub struct TaskbarIdentity {
     handle: HWND,
     explorer_process_id: u32,
+    monitor_id: String,
+    is_primary_monitor: bool,
+}
+
+/// 设置页下拉框展示的一块可用任务栏显示器。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskbarMonitor {
+    id: String,
+    label: String,
+    is_primary: bool,
 }
 
 /// 主任务栏在屏幕坐标系中的物理像素矩形。
@@ -47,6 +58,11 @@ impl TaskbarDpi {
     /// 将一个物理像素坐标或长度转换为逻辑像素。
     pub fn physical_to_logical(&self, physical_pixels: i32) -> f64 {
         f64::from(physical_pixels) / self.scale_factor
+    }
+
+    /// 将一个逻辑像素坐标或长度转换为当前任务栏的物理像素。
+    pub fn logical_to_physical(&self, logical_pixels: i32) -> i32 {
+        (f64::from(logical_pixels) * self.scale_factor).round() as i32
     }
 }
 
@@ -110,11 +126,92 @@ impl Drop for OwnedHandle {
     }
 }
 
-/// 查找主任务栏，并验证它属于 explorer.exe 和 Windows 主显示器。
+/// 查找 Windows 主任务栏，并验证它属于 explorer.exe。
 pub fn find_main_taskbar() -> Result<TaskbarIdentity, String> {
-    let handle = unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }
-        .map_err(|error| format!("无法找到主任务栏窗口：{error}"))?;
+    find_taskbar("primary")
+}
 
+/// 查找设置指定显示器上的任务栏；目标暂时不存在时安全回退到主任务栏。
+pub fn find_taskbar(target_monitor: &str) -> Result<TaskbarIdentity, String> {
+    let taskbars = enumerate_taskbars()?;
+    let selected = taskbars
+        .iter()
+        .find(|taskbar| taskbar.monitor_id.eq_ignore_ascii_case(target_monitor))
+        .or_else(|| taskbars.iter().find(|taskbar| taskbar.is_primary_monitor))
+        .ok_or_else(|| "未找到可用的 Windows 任务栏".to_owned())?;
+
+    Ok(TaskbarIdentity {
+        handle: selected.handle,
+        explorer_process_id: selected.explorer_process_id,
+        monitor_id: selected.monitor_id.clone(),
+        is_primary_monitor: selected.is_primary_monitor,
+    })
+}
+
+/// 枚举当前具有任务栏的显示器，供设置页构建目标显示器下拉框。
+pub fn list_taskbar_monitors() -> Result<Vec<TaskbarMonitor>, String> {
+    let mut taskbars = enumerate_taskbars()?;
+    taskbars.sort_by_key(|taskbar| {
+        read_taskbar_rect(taskbar)
+            .map(|rect| (rect.left(), rect.top()))
+            .unwrap_or((i32::MAX, i32::MAX))
+    });
+
+    Ok(taskbars
+        .into_iter()
+        .map(|taskbar| TaskbarMonitor {
+            // “primary” 表示始终跟随 Windows 当前主显示器；副屏保存稳定设备标识。
+            id: if taskbar.is_primary_monitor {
+                "primary".to_owned()
+            } else {
+                taskbar.monitor_id.clone()
+            },
+            label: taskbar_monitor_label(&taskbar.monitor_id, taskbar.is_primary_monitor),
+            is_primary: taskbar.is_primary_monitor,
+        })
+        .collect())
+}
+
+/// 将 Windows 设备标识转换为与系统设置一致的“显示器 N”标签。
+fn taskbar_monitor_label(monitor_id: &str, is_primary: bool) -> String {
+    let display_number = monitor_id
+        .strip_prefix(r"\\.\DISPLAY")
+        .unwrap_or(monitor_id);
+    if is_primary {
+        format!("显示器 {display_number}（主显示器）")
+    } else {
+        format!("显示器 {display_number}")
+    }
+}
+
+/// 收集主任务栏与所有副屏任务栏，并验证它们都属于 Explorer。
+fn enumerate_taskbars() -> Result<Vec<TaskbarIdentity>, String> {
+    let main_handle = unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }
+        .map_err(|error| format!("无法找到主任务栏窗口：{error}"))?;
+    let mut handles = vec![main_handle];
+    let mut previous = None;
+    while let Ok(handle) =
+        unsafe { FindWindowExW(None, previous, w!("Shell_SecondaryTrayWnd"), None) }
+    {
+        handles.push(handle);
+        previous = Some(handle);
+    }
+
+    let mut taskbars = Vec::with_capacity(handles.len());
+    for (index, handle) in handles.into_iter().enumerate() {
+        match read_taskbar_identity(handle) {
+            Ok(taskbar) => taskbars.push(taskbar),
+            Err(_) if index > 0 => {
+                // 个别副屏任务栏可能正在随显示器断开而销毁，不能因此影响主任务栏。
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(taskbars)
+}
+
+/// 验证单个候选任务栏的进程归属，并读取它所在的显示器信息。
+fn read_taskbar_identity(handle: HWND) -> Result<TaskbarIdentity, String> {
     let mut process_id = 0;
     let thread_id = unsafe { GetWindowThreadProcessId(handle, Some(&mut process_id)) };
     if thread_id == 0 || process_id == 0 {
@@ -127,40 +224,56 @@ pub fn find_main_taskbar() -> Result<TaskbarIdentity, String> {
         .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("explorer.exe"));
     if !is_explorer {
         return Err(format!(
-            "Shell_TrayWnd 不属于 explorer.exe：{}",
+            "任务栏窗口不属于 explorer.exe：{}",
             process_path.display()
         ));
     }
 
-    verify_primary_monitor(handle)?;
+    let (monitor_id, is_primary_monitor) = read_monitor_identity(handle)?;
 
     Ok(TaskbarIdentity {
         handle,
         explorer_process_id: process_id,
+        monitor_id,
+        is_primary_monitor,
     })
 }
 
-/// 验证任务栏 HWND 所在显示器带有 Windows 主显示器标志。
-fn verify_primary_monitor(taskbar_handle: HWND) -> Result<(), String> {
+/// 读取任务栏所在显示器的设备标识和主显示器标志。
+fn read_monitor_identity(taskbar_handle: HWND) -> Result<(String, bool), String> {
     let monitor = unsafe { MonitorFromWindow(taskbar_handle, MONITOR_DEFAULTTONULL) };
     if monitor.0.is_null() {
         return Err("无法确定主任务栏所在的显示器".to_owned());
     }
 
-    let mut monitor_info = MONITORINFO {
-        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+    let mut monitor_info = MONITORINFOEXW {
+        monitorInfo: crate::platform::windows::MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFOEXW>() as u32,
+            ..Default::default()
+        },
         ..Default::default()
     };
-    let read_succeeded = unsafe { GetMonitorInfoW(monitor, &mut monitor_info) };
+    let read_succeeded = unsafe { GetMonitorInfoW(monitor, &mut monitor_info.monitorInfo) };
     if !read_succeeded.as_bool() {
         return Err("无法读取主任务栏所在显示器的信息".to_owned());
     }
 
-    if monitor_info.dwFlags & MONITORINFOF_PRIMARY == 0 {
-        return Err("Shell_TrayWnd 不在 Windows 主显示器上".to_owned());
+    let device_length = monitor_info
+        .szDevice
+        .iter()
+        .position(|character| *character == 0)
+        .unwrap_or(monitor_info.szDevice.len());
+    let monitor_id = OsString::from_wide(&monitor_info.szDevice[..device_length])
+        .to_string_lossy()
+        .into_owned();
+    if monitor_id.is_empty() {
+        return Err("任务栏所在显示器缺少设备标识".to_owned());
     }
 
-    Ok(())
+    Ok((
+        monitor_id,
+        monitor_info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
+    ))
 }
 
 /// 读取已验证任务栏的屏幕矩形，并计算物理像素宽高。

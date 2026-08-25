@@ -2,14 +2,25 @@
 import { storeToRefs } from 'pinia'
 import { computed } from 'vue'
 
-import { readProgressStyle } from '@/lib/settings-api'
+import {
+  readCustomProgressColor,
+  readProgressColorSource,
+  readProgressStyle,
+  readShowProgress,
+} from '@/lib/settings-api'
 
 import { useBarStore } from '../bar-store'
 
 const barStore = useBarStore()
 const { settings, snapshot } = storeToRefs(barStore)
+const showProgress = computed(() => readShowProgress(settings.value))
 const progressStyle = computed(() => readProgressStyle(settings.value))
-const accentColor = computed(() => snapshot.value?.accentColor || '#0078D4')
+const accentColor = computed(() => {
+  const source = readProgressColorSource(settings.value)
+  if (source === 'custom') return readCustomProgressColor(settings.value)
+  if (source === 'system') return snapshot.value?.systemAccentColor || '#0078D4'
+  return snapshot.value?.accentColor || '#0078D4'
+})
 const progressPercentage = computed(() => {
   const timeline = snapshot.value?.timeline
   if (!timeline) return 0
@@ -38,13 +49,13 @@ const backgroundProgressStyle = computed(() => ({
 
 <template>
   <span
-    v-if="progressStyle === 'background-gradient'"
+    v-if="showProgress && progressStyle === 'background-gradient'"
     aria-hidden="true"
     class="pointer-events-none absolute inset-y-0 left-0 z-0 transition-[width] duration-150"
     :style="backgroundProgressStyle"
   />
   <span
-    v-if="progressStyle === 'underline'"
+    v-if="showProgress && progressStyle === 'underline'"
     aria-hidden="true"
     class="pointer-events-none absolute bottom-0 left-0 z-20 h-0.5 transition-[width] duration-150"
     :style="{ backgroundColor: accentColor, width: `${progressPercentage}%` }"

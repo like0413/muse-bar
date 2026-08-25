@@ -106,8 +106,10 @@ fn wait_for_bar_recovery(app: &AppHandle) -> Result<(), String> {
 /// Tauri 的 Windows 实现要求从非主线程调用窗口与 WebView 创建接口；接口内部会把
 /// 真正的创建工作派发到事件循环，避免 WebView2 同步初始化造成主线程死锁。
 fn recover_bar_once(app: &AppHandle) -> Result<(), String> {
-    let taskbar = taskbar::find_main_taskbar()?;
+    let settings = app.state::<AppState>().settings()?;
+    let taskbar = taskbar::find_taskbar(&settings.target_monitor)?;
     let taskbar_rect = taskbar::read_taskbar_rect(&taskbar)?;
+    let taskbar_dpi = taskbar::read_taskbar_dpi(&taskbar)?;
 
     let config = app
         .config()
@@ -141,9 +143,14 @@ fn recover_bar_once(app: &AppHandle) -> Result<(), String> {
         }
     };
 
-    let position = app.state::<AppState>().settings()?.position;
-    let host_size = match child_host::attach_window(&bar_window, &taskbar, &taskbar_rect, position)
-    {
+    let host_size = match child_host::attach_window(
+        &bar_window,
+        &taskbar,
+        &taskbar_rect,
+        &taskbar_dpi,
+        settings.position,
+        settings.manual_offset,
+    ) {
         Ok(host_size) => host_size,
         Err(error) => {
             if bar_recreated {

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
-import { nextTick, onBeforeUnmount, onMounted, useTemplateRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, useTemplateRef, watch } from 'vue'
 
 import { reportBarContentWidth } from '@/lib/bar-layout-api'
+import { readControlPosition, readShowControls } from '@/lib/settings-api'
 
 import { useBarStore } from '../bar-store'
 import BarArtwork from './BarArtwork.vue'
@@ -16,6 +17,8 @@ const emit = defineEmits<{
 
 const barStore = useBarStore()
 const { settings, snapshot } = storeToRefs(barStore)
+const showControls = computed(() => readShowControls(settings.value))
+const controlPosition = computed(() => readControlPosition(settings.value))
 const barPageElement = useTemplateRef<HTMLElement>('barPage')
 const barSurfaceElement = useTemplateRef<HTMLElement>('barSurface')
 let resizeObserver: ResizeObserver | undefined
@@ -55,7 +58,7 @@ function measureNaturalWidth(): number | undefined {
   const title = surface?.querySelector<HTMLElement>('[data-bar-title]')
   const artwork = surface?.querySelector<HTMLElement>('[data-slot="avatar"]')
   const controls = surface?.querySelector<HTMLElement>('[data-slot="button-group"]')
-  if (!page || !surface || !title || !artwork || !controls) return undefined
+  if (!page || !surface || !title || !artwork) return undefined
 
   const artist = surface.querySelector<HTMLElement>('[data-bar-artist]') ?? undefined
   const surfaceStyle = window.getComputedStyle(surface)
@@ -65,9 +68,9 @@ function measureNaturalWidth(): number | undefined {
     readHorizontalInsets(page) +
     readHorizontalInsets(surface) +
     artwork.getBoundingClientRect().width +
-    controls.getBoundingClientRect().width +
+    (controls?.getBoundingClientRect().width ?? 0) +
     textWidth +
-    gap * 2
+    gap * (controls ? 2 : 1)
   )
 }
 
@@ -138,9 +141,10 @@ onBeforeUnmount(() => {
       @contextmenu.prevent="emit('openSettings')"
     >
       <BarProgress />
+      <BarMediaControls v-if="showControls && controlPosition === 'left'" />
       <BarArtwork />
       <BarTrackInfo />
-      <BarMediaControls />
+      <BarMediaControls v-if="showControls && controlPosition === 'right'" />
     </section>
   </main>
 </template>

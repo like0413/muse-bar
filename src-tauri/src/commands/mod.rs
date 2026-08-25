@@ -4,3 +4,4 @@ pub mod lifecycle;
 pub mod media;
 pub mod runtime;
 pub mod settings;
+pub mod taskbar;

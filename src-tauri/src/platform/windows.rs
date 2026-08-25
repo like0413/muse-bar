@@ -11,7 +11,8 @@ pub use ::windows::Win32::Graphics::Dwm::DwmGetColorizationColor;
 
 /// 屏幕坐标转换以及窗口所属显示器查询 API。
 pub use ::windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromWindow, ScreenToClient, MONITORINFO, MONITOR_DEFAULTTONULL,
+    GetMonitorInfoW, MonitorFromWindow, ScreenToClient, MONITORINFO, MONITORINFOEXW,
+    MONITOR_DEFAULTTONULL,
 };
 
 /// 获取创建隐藏消息窗口所需的当前模块句柄。
@@ -38,8 +39,8 @@ pub use ::windows::Win32::UI::Accessibility::{
 
 /// 后续挂载任务栏窗口需要读取和修改的窗口样式 API。
 pub use ::windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumChildWindows, FindWindowW,
-    GetClassNameW, GetMessageW, GetParent, GetWindowLongPtrW, GetWindowRect,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumChildWindows, FindWindowExW,
+    FindWindowW, GetClassNameW, GetMessageW, GetParent, GetWindowLongPtrW, GetWindowRect,
     GetWindowThreadProcessId, IsWindow, IsWindowVisible, PostQuitMessage, RegisterClassW,
     RegisterWindowMessageW, SetLayeredWindowAttributes, SetParent, SetWindowLongPtrW, SetWindowPos,
     ShowWindow, TranslateMessage, GWL_EXSTYLE, GWL_STYLE, HWND_TOP, LWA_ALPHA,

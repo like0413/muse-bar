@@ -17,7 +17,7 @@ use crate::platform::windows::{
     WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
-use crate::taskbar::{TaskbarIdentity, TaskbarRect};
+use crate::taskbar::{TaskbarDpi, TaskbarIdentity, TaskbarRect};
 use crate::{settings::TaskbarPosition, taskbar_occupancy};
 
 const STABILIZATION_DELAYS: [Duration; 3] = [
@@ -50,6 +50,19 @@ pub(crate) fn is_window_alive<R: Runtime>(bar_window: &Window<R>) -> bool {
     process_id == unsafe { GetCurrentProcessId() }
 }
 
+/// 判断 Bar 当前是否已经挂载到指定任务栏，避免跨显示器切换时在旧父窗口中计算新坐标。
+pub(crate) fn is_attached_to_taskbar<R: Runtime>(
+    bar_window: &Window<R>,
+    taskbar: &TaskbarIdentity,
+) -> bool {
+    let Ok(bar_handle) = bar_window.hwnd() else {
+        return false;
+    };
+    unsafe { GetParent(bar_handle) }
+        .map(|parent| parent == taskbar.handle())
+        .unwrap_or(false)
+}
+
 /// 将 Tauri 窗口转换为正式 Child 宿主并挂载到目标任务栏矩形。
 ///
 /// 调用方只需要提供经过验证的任务栏身份、矩形和目标位置；窗口样式、分层属性、
@@ -58,7 +71,9 @@ pub(crate) fn attach_window<R: Runtime>(
     bar_window: &Window<R>,
     taskbar: &TaskbarIdentity,
     taskbar_rect: &TaskbarRect,
+    taskbar_dpi: &TaskbarDpi,
     position: TaskbarPosition,
+    manual_offset: i32,
 ) -> Result<ChildHostSize, String> {
     let bar_handle = bar_window
         .hwnd()
@@ -68,8 +83,15 @@ pub(crate) fn attach_window<R: Runtime>(
     // 父子关系，使后续准备过程与首次挂载保持相同顺序，再由 attach_to_taskbar 挂回。
     let _ = unsafe { SetParent(bar_handle, None) };
     prepare_window(bar_handle)?;
-    let (width, height) =
-        attach_to_taskbar(bar_window, bar_handle, taskbar, taskbar_rect, position)?;
+    let (width, height) = attach_to_taskbar(
+        bar_window,
+        bar_handle,
+        taskbar,
+        taskbar_rect,
+        taskbar_dpi,
+        position,
+        manual_offset,
+    )?;
 
     Ok(ChildHostSize {
         width: u32::try_from(width).map_err(|_| "Bar 宽度无法转换为物理像素".to_owned())?,
@@ -94,7 +116,9 @@ pub(crate) fn animate_window_width<R: Runtime>(
     bar_window: Window<R>,
     taskbar: &TaskbarIdentity,
     taskbar_rect: &TaskbarRect,
+    taskbar_dpi: &TaskbarDpi,
     position: TaskbarPosition,
+    manual_offset: i32,
     target_width: i32,
     animation_revision: u64,
     latest_animation_revision: Arc<AtomicU64>,
@@ -131,10 +155,17 @@ pub(crate) fn animate_window_width<R: Runtime>(
         return Err("无法将 Bar 当前位置转换为任务栏客户区坐标".to_owned());
     }
     let occupied_regions = taskbar_occupancy::read_positioning_regions(taskbar, taskbar_rect);
-    let target_screen_x = taskbar_occupancy::resolve_bar_screen_x(
+    let base_screen_x = taskbar_occupancy::resolve_bar_screen_x(
         position,
         taskbar_rect,
         &occupied_regions,
+        target_width,
+    );
+    let target_screen_x = apply_manual_offset(
+        base_screen_x,
+        manual_offset,
+        taskbar_dpi,
+        taskbar_rect,
         target_width,
     );
     let mut target_client_position = POINT {
@@ -242,7 +273,9 @@ fn attach_to_taskbar<R: Runtime>(
     bar_handle: HWND,
     taskbar: &TaskbarIdentity,
     taskbar_rect: &TaskbarRect,
+    taskbar_dpi: &TaskbarDpi,
     position: TaskbarPosition,
+    manual_offset: i32,
 ) -> Result<(i32, i32), String> {
     let (bar_width, bar_height) = read_window_size(bar_handle)?;
 
@@ -255,10 +288,17 @@ fn attach_to_taskbar<R: Runtime>(
     }
 
     let occupied_regions = taskbar_occupancy::read_positioning_regions(taskbar, taskbar_rect);
-    let screen_x = taskbar_occupancy::resolve_bar_screen_x(
+    let base_screen_x = taskbar_occupancy::resolve_bar_screen_x(
         position,
         taskbar_rect,
         &occupied_regions,
+        bar_width,
+    );
+    let screen_x = apply_manual_offset(
+        base_screen_x,
+        manual_offset,
+        taskbar_dpi,
+        taskbar_rect,
         bar_width,
     );
     let screen_y = taskbar_rect
@@ -309,6 +349,25 @@ fn attach_to_taskbar<R: Runtime>(
     )?;
 
     Ok((bar_width, bar_height))
+}
+
+/// 把逻辑像素偏移应用到基础位置，并保证 Bar 始终留在目标任务栏内部。
+fn apply_manual_offset(
+    base_screen_x: i32,
+    manual_offset: i32,
+    taskbar_dpi: &TaskbarDpi,
+    taskbar_rect: &TaskbarRect,
+    bar_width: i32,
+) -> i32 {
+    let offset = taskbar_dpi.logical_to_physical(manual_offset);
+    let minimum_x = taskbar_rect.left();
+    let maximum_x = taskbar_rect
+        .right()
+        .saturating_sub(bar_width)
+        .max(minimum_x);
+    base_screen_x
+        .saturating_add(offset)
+        .clamp(minimum_x, maximum_x)
 }
 
 /// 在 WebView 异步初始化期间短暂重申位置，防止顶层坐标再次写入 Child。

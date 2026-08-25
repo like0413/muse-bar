@@ -84,6 +84,8 @@ impl AppState {
 
         updated_settings.normalize_width_range();
         updated_settings.normalize_title_scroll_speed();
+        updated_settings.normalize_positioning();
+        updated_settings.normalize_custom_progress_color();
         updated_settings
             .save(app)
             .map_err(|error| format!("无法保存应用设置：{error}"))?;

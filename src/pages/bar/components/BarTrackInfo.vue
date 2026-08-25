@@ -144,6 +144,28 @@ function startTitleAnimation(textWidth: number, viewportWidth: number): void {
 
   const distance = textWidth - viewportWidth
   const movementDuration = (distance / speed) * 1000
+  if (titleScrollMode.value === 'bounce') {
+    const totalDuration = movementDuration * 2 + RESTART_TITLE_PAUSE_MS * 2
+    const forwardStart = RESTART_TITLE_PAUSE_MS / totalDuration
+    const forwardEnd = (RESTART_TITLE_PAUSE_MS + movementDuration) / totalDuration
+    const backwardStart = (RESTART_TITLE_PAUSE_MS * 2 + movementDuration) / totalDuration
+    titleAnimation = track.animate(
+      [
+        { transform: 'translateX(0)', offset: 0 },
+        { transform: 'translateX(0)', offset: forwardStart },
+        { transform: `translateX(-${distance}px)`, offset: forwardEnd },
+        { transform: `translateX(-${distance}px)`, offset: backwardStart },
+        { transform: 'translateX(0)', offset: 1 },
+      ],
+      {
+        duration: totalDuration,
+        easing: 'linear',
+        iterations: Number.POSITIVE_INFINITY,
+      },
+    )
+    return
+  }
+
   const totalDuration = movementDuration + RESTART_TITLE_PAUSE_MS * 2
   const movementStart = RESTART_TITLE_PAUSE_MS / totalDuration
   const movementEnd = (RESTART_TITLE_PAUSE_MS + movementDuration) / totalDuration

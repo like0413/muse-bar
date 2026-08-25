@@ -26,6 +26,14 @@ import {
   FieldLabel,
   FieldTitle,
 } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import {
   Sidebar,
   SidebarContent,
@@ -61,11 +69,17 @@ import { getRuntimeInfo } from '@/lib/runtime-info'
 import {
   getSettings,
   readColorMode,
+  readControlPosition,
+  readCustomProgressColor,
   readLaunchOnStartup,
   readManualOffset,
   readMaximumWidth,
   readMinimumWidth,
+  readProgressColorSource,
   readProgressStyle,
+  readShowControls,
+  readShowProgress,
+  readTargetMonitor,
   readTaskbarPosition,
   readTitleScrollEnabled,
   readTitleScrollMode,
@@ -73,6 +87,8 @@ import {
   readWindowMode,
   updateSettings,
   type ColorMode,
+  type ControlPosition,
+  type ProgressColorSource,
   type ProgressStyle,
   type SettingsPayload,
   type TaskbarPosition,
@@ -90,6 +106,7 @@ import {
   type TaskbarOccupancy,
   type WindowsVersion,
 } from '@/lib/taskbar-diagnostics-api'
+import { getTaskbarMonitors, type TaskbarMonitor } from '@/lib/taskbar-monitor-api'
 import { readCurrentWindowLabel } from '@/lib/window-label'
 import type { RuntimeInfo } from '@/types/runtime-info'
 
@@ -114,6 +131,8 @@ const taskbarIdentity = ref<TaskbarIdentity>()
 const taskbarDpi = ref<TaskbarDpi>()
 const taskbarOccupancy = ref<TaskbarOccupancy>()
 const taskbarDiagnosticError = ref<string>()
+const taskbarMonitorError = ref<string>()
+const taskbarMonitors = ref<TaskbarMonitor[]>([])
 const mediaSnapshot = ref<MediaSnapshot | null>(null)
 const mediaSnapshotError = ref<string>()
 const mediaSessionIdentities = ref<MediaSessionIdentity[]>([])
@@ -121,7 +140,8 @@ const mediaSessionActivities = ref<MediaSessionActivity[]>([])
 const logDirectoryError = ref<string>()
 const minWidthDraft = ref<number[]>([])
 const maxWidthDraft = ref<number[]>([])
-const manualOffsetDraft = ref<number[]>([])
+const manualOffsetDraft = ref('0')
+const customProgressColorDraft = ref('#0078D4')
 const titleScrollSpeedDraft = ref<number[]>([])
 let stopMediaSnapshotListener: UnlistenFn | undefined
 let stopTimelineListener: UnlistenFn | undefined
@@ -130,15 +150,39 @@ let stopMediaSessionActivityListener: UnlistenFn | undefined
 let hasUnmounted = false
 
 const currentPosition = computed(() => readTaskbarPosition(settings.value))
+const currentTargetMonitor = computed(() => readTargetMonitor(settings.value))
+const targetMonitorSelection = computed(() => {
+  const selected = currentTargetMonitor.value
+  return taskbarMonitors.value.some((monitor) => monitor.id === selected) ? selected : 'primary'
+})
 const currentColorMode = computed(() => readColorMode(settings.value))
+const showControls = computed(() => readShowControls(settings.value))
+const currentControlPosition = computed(() => readControlPosition(settings.value))
+const showProgress = computed(() => readShowProgress(settings.value))
 const currentProgressStyle = computed(() => readProgressStyle(settings.value))
+const currentProgressColorSource = computed(() => readProgressColorSource(settings.value))
 const titleScrollEnabled = computed(() => readTitleScrollEnabled(settings.value))
 const currentTitleScrollMode = computed(() => readTitleScrollMode(settings.value))
 const currentWindowMode = computed(() => readWindowMode(settings.value))
 const launchOnStartup = computed(() => readLaunchOnStartup(settings.value))
-const previewAccentColor = computed(() => mediaSnapshot.value?.accentColor || 'var(--primary)')
+const isCustomProgressColorValid = computed(() =>
+  /^#[0-9a-f]{6}$/i.test(customProgressColorDraft.value.trim()),
+)
+const previewAccentColor = computed(() => {
+  if (currentProgressColorSource.value === 'custom') return readCustomProgressColor(settings.value)
+  if (currentProgressColorSource.value === 'system') {
+    return mediaSnapshot.value?.systemAccentColor || '#0078D4'
+  }
+  return mediaSnapshot.value?.accentColor || '#0078D4'
+})
 const recentErrors = computed(() =>
-  [runtimeError.value, settingsError.value, taskbarDiagnosticError.value, mediaSnapshotError.value]
+  [
+    runtimeError.value,
+    settingsError.value,
+    taskbarDiagnosticError.value,
+    taskbarMonitorError.value,
+    mediaSnapshotError.value,
+  ]
     .filter((error): error is string => Boolean(error))
     .slice(-5),
 )
@@ -169,9 +213,32 @@ const progressStyleOptions: ReadonlyArray<{ value: ProgressStyle; label: string 
   { value: 'underline', label: '底部细线' },
   { value: 'background-gradient', label: '背景渐变' },
 ]
+const controlPositionOptions: ReadonlyArray<{ value: ControlPosition; label: string }> = [
+  { value: 'left', label: '左侧' },
+  { value: 'right', label: '右侧' },
+]
+const progressColorSourceOptions: ReadonlyArray<{
+  value: ProgressColorSource
+  label: string
+}> = [
+  { value: 'artwork', label: '封面主色' },
+  { value: 'system', label: '系统主题色' },
+  { value: 'custom', label: '自定义' },
+]
+const customProgressColorPresets = [
+  '#0078D4',
+  '#00B7C3',
+  '#107C10',
+  '#6B69D6',
+  '#C239B3',
+  '#E74856',
+  '#F7630C',
+  '#FFB900',
+] as const
 const titleScrollModeOptions: ReadonlyArray<{ value: TitleScrollMode; label: string }> = [
   { value: 'continuous', label: '连续滚动' },
   { value: 'restart', label: '从头滚动' },
+  { value: 'bounce', label: '来回滚动' },
 ]
 const playerKindLabels: Record<MediaPlayerKind, string> = {
   qqMusic: 'QQ 音乐',
@@ -224,6 +291,31 @@ function handlePositionChange(position: unknown): void {
     void saveSettingsPatch({ position })
 }
 
+/** 保存目标任务栏显示器的设备标识。 */
+function handleTargetMonitorChange(targetMonitor: unknown): void {
+  if (
+    typeof targetMonitor === 'string' &&
+    targetMonitor &&
+    targetMonitor !== currentTargetMonitor.value
+  ) {
+    void saveSettingsPatch({ targetMonitor })
+  }
+}
+
+/** 更新手动偏移输入草稿，提交前不触发原生窗口移动。 */
+function handleManualOffsetDraftChange(value: string | number): void {
+  manualOffsetDraft.value = String(value)
+}
+
+/** 保存 -200 到 200 之间的整数偏移；正值向右，负值向左。 */
+function commitManualOffset(): void {
+  const parsed = Number(manualOffsetDraft.value)
+  if (!Number.isFinite(parsed)) return
+  const manualOffset = Math.round(Math.min(200, Math.max(-200, parsed)))
+  manualOffsetDraft.value = String(manualOffset)
+  if (manualOffset !== readManualOffset(settings.value)) void saveSettingsPatch({ manualOffset })
+}
+
 /** 接收单选组的未知值，只保存合法的颜色模式。 */
 function handleColorModeChange(colorMode: unknown): void {
   if (
@@ -242,6 +334,55 @@ function handleProgressStyleChange(progressStyle: unknown): void {
     void saveSettingsPatch({ progressStyle })
 }
 
+/** 保存控制按钮显隐状态；隐藏时仍保留按钮位置偏好。 */
+function handleShowControlsChange(show: boolean): void {
+  if (show !== showControls.value) void saveSettingsPatch({ showControls: show })
+}
+
+/** 接收单选组的未知值，只保存合法的控制按钮位置。 */
+function handleControlPositionChange(position: unknown): void {
+  if ((position === 'left' || position === 'right') && position !== currentControlPosition.value) {
+    void saveSettingsPatch({ controlPosition: position })
+  }
+}
+
+/** 保存进度视觉显隐状态；隐藏时仍保留下级样式与颜色。 */
+function handleShowProgressChange(show: boolean): void {
+  if (show !== showProgress.value) void saveSettingsPatch({ showProgress: show })
+}
+
+/** 接收单选组的未知值，只保存合法的进度颜色来源。 */
+function handleProgressColorSourceChange(source: unknown): void {
+  if (
+    (source === 'artwork' || source === 'system' || source === 'custom') &&
+    source !== currentProgressColorSource.value
+  ) {
+    void saveSettingsPatch({ progressColorSource: source })
+  }
+}
+
+/** 选择预设颜色时立即保存，并同步手动输入框。 */
+function handleCustomProgressColorPresetChange(color: unknown): void {
+  if (typeof color !== 'string' || !/^#[0-9a-f]{6}$/i.test(color)) return
+  customProgressColorDraft.value = color.toUpperCase()
+  void saveSettingsPatch({ customProgressColor: customProgressColorDraft.value })
+}
+
+/** 更新自定义颜色输入草稿，只有提交时才写入配置。 */
+function handleCustomProgressColorDraftChange(value: string | number): void {
+  customProgressColorDraft.value = String(value)
+}
+
+/** 保存合法的六位十六进制颜色，并把文本统一为大写。 */
+function commitCustomProgressColor(): void {
+  const color = customProgressColorDraft.value.trim().toUpperCase()
+  if (!/^#[0-9A-F]{6}$/.test(color)) return
+  customProgressColorDraft.value = color
+  if (color !== readCustomProgressColor(settings.value)) {
+    void saveSettingsPatch({ customProgressColor: color })
+  }
+}
+
 /** 保存标题滚动总开关；关闭后下级参数保留但不再应用。 */
 function handleTitleScrollEnabledChange(enabled: boolean): void {
   if (enabled !== titleScrollEnabled.value) void saveSettingsPatch({ titleScrollEnabled: enabled })
@@ -249,7 +390,10 @@ function handleTitleScrollEnabledChange(enabled: boolean): void {
 
 /** 接收单选组的未知值，只保存合法的标题滚动方式。 */
 function handleTitleScrollModeChange(mode: unknown): void {
-  if ((mode === 'continuous' || mode === 'restart') && mode !== currentTitleScrollMode.value)
+  if (
+    (mode === 'continuous' || mode === 'restart' || mode === 'bounce') &&
+    mode !== currentTitleScrollMode.value
+  )
     void saveSettingsPatch({ titleScrollMode: mode })
 }
 
@@ -323,6 +467,16 @@ async function loadSettings(): Promise<void> {
     settingsError.value = undefined
   } catch (error) {
     settingsError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+/** 读取当前具有任务栏的显示器，供目标显示器下拉框使用。 */
+async function loadTaskbarMonitors(): Promise<void> {
+  try {
+    taskbarMonitors.value = await getTaskbarMonitors()
+    taskbarMonitorError.value = undefined
+  } catch (error) {
+    taskbarMonitorError.value = error instanceof Error ? error.message : String(error)
   }
 }
 
@@ -421,6 +575,7 @@ async function initializeSettingsPage(): Promise<void> {
   await Promise.all([
     loadRuntimeInfo(),
     loadSettings(),
+    loadTaskbarMonitors(),
     loadTaskbarDiagnostics(),
     startMediaSnapshotListener(),
     startMediaSessionIdentityListener(),
@@ -449,7 +604,8 @@ watch(
     const titleScrollSpeed = readTitleScrollSpeed(value)
     if (minimumWidth !== undefined) minWidthDraft.value = [minimumWidth]
     if (maximumWidth !== undefined) maxWidthDraft.value = [maximumWidth]
-    if (manualOffset !== undefined) manualOffsetDraft.value = [manualOffset]
+    if (manualOffset !== undefined) manualOffsetDraft.value = String(manualOffset)
+    customProgressColorDraft.value = readCustomProgressColor(value)
     titleScrollSpeedDraft.value = [titleScrollSpeed]
   },
   { immediate: true },
@@ -519,15 +675,42 @@ onBeforeUnmount(() => {
           <AlertTitle>设置保存失败</AlertTitle>
           <AlertDescription>{{ settingsError }}</AlertDescription>
         </Alert>
+        <Alert v-if="taskbarMonitorError && activeSection === 'taskbar'" variant="destructive">
+          <AlertCircleIcon />
+          <AlertTitle>显示器列表读取失败</AlertTitle>
+          <AlertDescription>{{ taskbarMonitorError }}</AlertDescription>
+        </Alert>
 
         <template v-if="activeSection === 'taskbar'">
           <Card>
             <CardHeader>
               <CardTitle>位置与尺寸</CardTitle>
-              <CardDescription>控制 Bar 在主任务栏中的位置和内容宽度范围。</CardDescription>
+              <CardDescription>控制 Bar 所在的任务栏、位置和内容宽度范围。</CardDescription>
             </CardHeader>
             <CardContent>
               <FieldGroup>
+                <Field>
+                  <FieldLabel>目标显示器</FieldLabel>
+                  <Select
+                    :model-value="targetMonitorSelection"
+                    :disabled="isSavingSettings || !settings || taskbarMonitors.length === 0"
+                    @update:model-value="handleTargetMonitorChange"
+                  >
+                    <SelectTrigger class="w-full">
+                      <SelectValue placeholder="选择具有任务栏的显示器" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem
+                        v-for="monitor in taskbarMonitors"
+                        :key="monitor.id"
+                        :value="monitor.id"
+                      >
+                        {{ monitor.label }}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>只列出当前具有 Windows 任务栏的显示器。</FieldDescription>
+                </Field>
                 <Field>
                   <FieldLabel>任务栏位置</FieldLabel>
                   <ToggleGroup
@@ -588,23 +771,25 @@ onBeforeUnmount(() => {
                   />
                   <FieldDescription>长标题超过最大宽度后会截断，不挤压控制按钮。</FieldDescription>
                 </Field>
-                <Field data-disabled="true">
+                <Field>
                   <div class="flex items-center justify-between gap-4">
                     <FieldContent>
                       <FieldTitle>手动偏移</FieldTitle>
-                      <FieldDescription
-                        >阶段 9.7 已暂缓，底层字段保留但当前不应用。</FieldDescription
-                      >
+                      <FieldDescription>正值向右移动，负值向左移动。</FieldDescription>
                     </FieldContent>
-                    <Badge variant="secondary">暂未启用</Badge>
+                    <Badge variant="outline">{{ manualOffsetDraft }} px</Badge>
                   </div>
-                  <Slider
-                    aria-label="手动偏移暂未启用"
+                  <Input
+                    type="number"
+                    inputmode="numeric"
+                    aria-label="Bar 手动偏移"
                     :model-value="manualOffsetDraft"
                     :min="-200"
                     :max="200"
-                    :step="1"
-                    disabled
+                    :disabled="isSavingSettings || !settings"
+                    @update:model-value="handleManualOffsetDraftChange"
+                    @blur="commitManualOffset"
+                    @keydown.enter="commitManualOffset"
                   />
                 </Field>
               </FieldGroup>
@@ -657,35 +842,158 @@ onBeforeUnmount(() => {
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle>进度样式</CardTitle>
-              <CardDescription>两种样式都使用当前封面提取并增强后的主色。</CardDescription>
+              <CardTitle>控制按钮</CardTitle>
+              <CardDescription>控制播放按钮是否出现，以及它们位于 Bar 的哪一侧。</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <FieldGroup>
+                <Field orientation="horizontal">
+                  <FieldContent>
+                    <FieldTitle>显示控制按钮</FieldTitle>
+                    <FieldDescription>包括上一曲、播放/暂停和下一曲。</FieldDescription>
+                  </FieldContent>
+                  <Switch
+                    :model-value="showControls"
+                    :disabled="isSavingSettings || !settings"
+                    aria-label="显示控制按钮"
+                    @update:model-value="handleShowControlsChange"
+                  />
+                </Field>
+                <Field :data-disabled="!showControls">
+                  <FieldLabel>按钮位置</FieldLabel>
+                  <ToggleGroup
+                    type="single"
+                    variant="outline"
+                    :model-value="currentControlPosition"
+                    :disabled="isSavingSettings || !settings || !showControls"
+                    @update:model-value="handleControlPositionChange"
+                  >
+                    <ToggleGroupItem
+                      v-for="option in controlPositionOptions"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </ToggleGroupItem>
+                  </ToggleGroup>
+                </Field>
+              </FieldGroup>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>播放进度</CardTitle>
+              <CardDescription>控制进度视觉的显隐、样式和颜色来源。</CardDescription>
             </CardHeader>
             <CardContent class="flex flex-col gap-6">
-              <ToggleGroup
-                type="single"
-                variant="outline"
-                :disabled="isSavingSettings || !settings"
-                :model-value="currentProgressStyle"
-                @update:model-value="handleProgressStyleChange"
-              >
-                <ToggleGroupItem
-                  v-for="option in progressStyleOptions"
-                  :key="option.value"
-                  :value="option.value"
-                  >{{ option.label }}</ToggleGroupItem
+              <FieldGroup>
+                <Field orientation="horizontal">
+                  <FieldContent>
+                    <FieldTitle>显示播放进度</FieldTitle>
+                    <FieldDescription>关闭后不会显示底线或背景渐变。</FieldDescription>
+                  </FieldContent>
+                  <Switch
+                    :model-value="showProgress"
+                    :disabled="isSavingSettings || !settings"
+                    aria-label="显示播放进度"
+                    @update:model-value="handleShowProgressChange"
+                  />
+                </Field>
+                <Field :data-disabled="!showProgress">
+                  <FieldLabel>进度样式</FieldLabel>
+                  <ToggleGroup
+                    type="single"
+                    variant="outline"
+                    :disabled="isSavingSettings || !settings || !showProgress"
+                    :model-value="currentProgressStyle"
+                    @update:model-value="handleProgressStyleChange"
+                  >
+                    <ToggleGroupItem
+                      v-for="option in progressStyleOptions"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </ToggleGroupItem>
+                  </ToggleGroup>
+                </Field>
+                <Field :data-disabled="!showProgress">
+                  <FieldLabel>进度颜色</FieldLabel>
+                  <ToggleGroup
+                    type="single"
+                    variant="outline"
+                    :model-value="currentProgressColorSource"
+                    :disabled="isSavingSettings || !settings || !showProgress"
+                    @update:model-value="handleProgressColorSourceChange"
+                  >
+                    <ToggleGroupItem
+                      v-for="option in progressColorSourceOptions"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </ToggleGroupItem>
+                  </ToggleGroup>
+                </Field>
+                <Field
+                  v-if="currentProgressColorSource === 'custom'"
+                  :data-disabled="!showProgress"
+                  :data-invalid="!isCustomProgressColorValid"
                 >
-              </ToggleGroup>
+                  <FieldLabel>自定义颜色</FieldLabel>
+                  <ToggleGroup
+                    type="single"
+                    variant="outline"
+                    class="flex-wrap justify-start"
+                    :model-value="readCustomProgressColor(settings)"
+                    :disabled="isSavingSettings || !settings || !showProgress"
+                    @update:model-value="handleCustomProgressColorPresetChange"
+                  >
+                    <ToggleGroupItem
+                      v-for="color in customProgressColorPresets"
+                      :key="color"
+                      :value="color"
+                      :aria-label="`使用颜色 ${color}`"
+                      class="size-9 p-1"
+                    >
+                      <span
+                        class="size-full rounded-sm border border-black/10"
+                        :style="{ backgroundColor: color }"
+                      />
+                    </ToggleGroupItem>
+                  </ToggleGroup>
+                  <Input
+                    :model-value="customProgressColorDraft"
+                    placeholder="#0078D4"
+                    maxlength="7"
+                    spellcheck="false"
+                    :aria-invalid="!isCustomProgressColorValid"
+                    :disabled="isSavingSettings || !settings || !showProgress"
+                    @update:model-value="handleCustomProgressColorDraftChange"
+                    @blur="commitCustomProgressColor"
+                    @keydown.enter="commitCustomProgressColor"
+                  />
+                  <FieldDescription> 输入“#”加六位十六进制颜色，例如 #FF5A5F。 </FieldDescription>
+                </Field>
+              </FieldGroup>
               <div class="bg-muted flex min-h-36 items-center justify-center rounded-xl border p-6">
                 <div
                   class="bg-card text-card-foreground relative flex h-14 w-full max-w-md items-center gap-3 overflow-hidden rounded-xl border px-3 shadow-sm"
                 >
                   <div
-                    v-if="currentProgressStyle === 'background-gradient'"
+                    v-if="showProgress && currentProgressStyle === 'background-gradient'"
                     class="pointer-events-none absolute inset-y-0 left-0 w-3/5"
                     :style="{
                       background: `linear-gradient(90deg, transparent, color-mix(in srgb, ${previewAccentColor} 42%, transparent))`,
                     }"
                   />
+                  <div
+                    v-if="showControls && currentControlPosition === 'left'"
+                    class="relative shrink-0 text-sm"
+                    aria-hidden="true"
+                  >
+                    ◀　Ⅱ　▶
+                  </div>
                   <Avatar class="relative size-10 rounded-md">
                     <AvatarImage
                       v-if="mediaSnapshot?.artworkDataUrl"
@@ -703,9 +1011,15 @@ onBeforeUnmount(() => {
                       {{ mediaSnapshot?.artist || '当前歌曲歌手' }}
                     </p>
                   </div>
-                  <div class="relative shrink-0 text-sm" aria-hidden="true">◀　Ⅱ　▶</div>
                   <div
-                    v-if="currentProgressStyle === 'underline'"
+                    v-if="showControls && currentControlPosition === 'right'"
+                    class="relative shrink-0 text-sm"
+                    aria-hidden="true"
+                  >
+                    ◀　Ⅱ　▶
+                  </div>
+                  <div
+                    v-if="showProgress && currentProgressStyle === 'underline'"
                     class="absolute bottom-0 left-0 h-0.5 w-3/5"
                     :style="{ backgroundColor: previewAccentColor }"
                   />
@@ -771,7 +1085,7 @@ onBeforeUnmount(() => {
                     >
                   </ToggleGroup>
                   <FieldDescription>
-                    连续滚动会让两份标题首尾衔接；从头滚动会在末尾停顿后回到起点。
+                    连续滚动会首尾衔接；从头滚动会在末尾重置；来回滚动会在两端之间往返。
                   </FieldDescription>
                 </Field>
               </FieldGroup>

@@ -3,9 +3,11 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 export type SettingsPayload = Record<string, unknown>
 export type ColorMode = 'system' | 'dark' | 'light'
+export type ControlPosition = 'left' | 'right'
+export type ProgressColorSource = 'artwork' | 'system' | 'custom'
 export type ProgressStyle = 'underline' | 'background-gradient'
 export type TaskbarPosition = 'left' | 'center' | 'right'
-export type TitleScrollMode = 'continuous' | 'restart'
+export type TitleScrollMode = 'continuous' | 'restart' | 'bounce'
 export type WindowMode = 'auto' | 'owner'
 
 const SETTINGS_CHANGED_EVENT = 'settings-changed'
@@ -46,6 +48,35 @@ export function readProgressStyle(settings: SettingsPayload | undefined): Progre
   return settings?.progressStyle === 'background-gradient' ? 'background-gradient' : 'underline'
 }
 
+/** 从设置载荷中读取进度显示开关，旧设置缺少字段时默认显示。 */
+export function readShowProgress(settings: SettingsPayload | undefined): boolean {
+  return settings?.showProgress !== false
+}
+
+/** 从设置载荷中读取进度颜色来源，异常值回退到封面主色。 */
+export function readProgressColorSource(
+  settings: SettingsPayload | undefined,
+): ProgressColorSource {
+  const source = settings?.progressColorSource
+  return source === 'system' || source === 'custom' ? source : 'artwork'
+}
+
+/** 从设置载荷中读取已校验的自定义进度颜色。 */
+export function readCustomProgressColor(settings: SettingsPayload | undefined): string {
+  const color = settings?.customProgressColor
+  return typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color) ? color : '#0078D4'
+}
+
+/** 从设置载荷中读取控制按钮显隐开关，旧设置缺少字段时默认显示。 */
+export function readShowControls(settings: SettingsPayload | undefined): boolean {
+  return settings?.showControls !== false
+}
+
+/** 从设置载荷中读取控制按钮位置，异常值回退到 Bar 右侧。 */
+export function readControlPosition(settings: SettingsPayload | undefined): ControlPosition {
+  return settings?.controlPosition === 'left' ? 'left' : 'right'
+}
+
 /** 从设置载荷中读取标题滚动开关，旧设置缺少字段时默认开启。 */
 export function readTitleScrollEnabled(settings: SettingsPayload | undefined): boolean {
   return settings?.titleScrollEnabled !== false
@@ -59,7 +90,8 @@ export function readTitleScrollSpeed(settings: SettingsPayload | undefined): num
 
 /** 从设置载荷中读取标题滚动方式，旧设置缺少字段时默认连续滚动。 */
 export function readTitleScrollMode(settings: SettingsPayload | undefined): TitleScrollMode {
-  return settings?.titleScrollMode === 'restart' ? 'restart' : 'continuous'
+  const mode = settings?.titleScrollMode
+  return mode === 'restart' || mode === 'bounce' ? mode : 'continuous'
 }
 
 /** 从设置载荷中读取 Bar 的最小逻辑宽度。 */
@@ -72,9 +104,15 @@ export function readMaximumWidth(settings: SettingsPayload | undefined): number 
   return typeof settings?.maxWidth === 'number' ? settings.maxWidth : undefined
 }
 
-/** 从设置载荷中读取预留的手动位置偏移。 */
+/** 从设置载荷中读取 Bar 的水平逻辑像素偏移。 */
 export function readManualOffset(settings: SettingsPayload | undefined): number | undefined {
   return typeof settings?.manualOffset === 'number' ? settings.manualOffset : undefined
+}
+
+/** 从设置载荷中读取目标显示器设备标识，旧设置默认使用主显示器。 */
+export function readTargetMonitor(settings: SettingsPayload | undefined): string {
+  const monitor = settings?.targetMonitor
+  return typeof monitor === 'string' && monitor.trim() ? monitor : 'primary'
 }
 
 /** 从设置载荷中读取窗口宿主模式。 */

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Runtime};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
-const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 8;
+const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 9;
 const WIDTH_SETTINGS_SCHEMA_VERSION: u32 = 7;
 const DEFAULT_MIN_WIDTH: u32 = 240;
 const DEFAULT_MAX_WIDTH: u32 = 380;
@@ -20,6 +20,10 @@ const ALLOWED_MAX_WIDTH: u32 = 520;
 const DEFAULT_TITLE_SCROLL_SPEED: u32 = 30;
 const MINIMUM_TITLE_SCROLL_SPEED: u32 = 10;
 const MAXIMUM_TITLE_SCROLL_SPEED: u32 = 100;
+const DEFAULT_TARGET_MONITOR: &str = "primary";
+const DEFAULT_CUSTOM_PROGRESS_COLOR: &str = "#0078D4";
+const MINIMUM_MANUAL_OFFSET: i32 = -200;
+const MAXIMUM_MANUAL_OFFSET: i32 = 200;
 
 /// Bar 窗口与 Windows 任务栏之间的宿主模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +72,25 @@ pub enum TitleScrollMode {
     Continuous,
     /// 单个标题滚动到末尾后回到起点重新开始。
     Restart,
+    /// 标题到达末尾后反向移动，回到起点后再次正向滚动。
+    Bounce,
+}
+
+/// 播放控制按钮在 Bar 内容中的排列位置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ControlPosition {
+    Left,
+    Right,
+}
+
+/// 进度视觉使用的颜色来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProgressColorSource {
+    Artwork,
+    System,
+    Custom,
 }
 
 /// Muse Bar 可持久化的用户设置。
@@ -78,10 +101,16 @@ pub struct AppSettings {
     pub schema_version: u32,
     pub window_mode: WindowMode,
     pub position: TaskbarPosition,
+    pub target_monitor: String,
     pub min_width: u32,
     pub max_width: u32,
     pub manual_offset: i32,
+    pub show_controls: bool,
+    pub control_position: ControlPosition,
+    pub show_progress: bool,
     pub progress_style: ProgressStyle,
+    pub progress_color_source: ProgressColorSource,
+    pub custom_progress_color: String,
     pub color_mode: ColorMode,
     pub title_scroll_enabled: bool,
     pub title_scroll_speed: u32,
@@ -96,10 +125,16 @@ impl Default for AppSettings {
             schema_version: CURRENT_SETTINGS_SCHEMA_VERSION,
             window_mode: WindowMode::Auto,
             position: TaskbarPosition::Right,
+            target_monitor: DEFAULT_TARGET_MONITOR.to_owned(),
             min_width: DEFAULT_MIN_WIDTH,
             max_width: DEFAULT_MAX_WIDTH,
             manual_offset: 0,
+            show_controls: true,
+            control_position: ControlPosition::Right,
+            show_progress: true,
             progress_style: ProgressStyle::Underline,
+            progress_color_source: ProgressColorSource::Artwork,
+            custom_progress_color: DEFAULT_CUSTOM_PROGRESS_COLOR.to_owned(),
             color_mode: ColorMode::System,
             title_scroll_enabled: true,
             title_scroll_speed: DEFAULT_TITLE_SCROLL_SPEED,
@@ -125,7 +160,14 @@ impl AppSettings {
                 let migrated = settings.migrate();
                 let width_range_normalized = settings.normalize_width_range();
                 let title_scroll_speed_normalized = settings.normalize_title_scroll_speed();
-                if migrated || width_range_normalized || title_scroll_speed_normalized {
+                let positioning_normalized = settings.normalize_positioning();
+                let progress_color_normalized = settings.normalize_custom_progress_color();
+                if migrated
+                    || width_range_normalized
+                    || title_scroll_speed_normalized
+                    || positioning_normalized
+                    || progress_color_normalized
+                {
                     // 迁移写回失败不应阻止启动；本次运行仍使用迁移后的内存设置。
                     let _ = settings.save(app);
                 }
@@ -193,6 +235,44 @@ impl AppSettings {
         self.title_scroll_speed = speed;
         changed
     }
+
+    /// 清理显示器标识并限制手动偏移，防止损坏配置产生不可见窗口。
+    pub(crate) fn normalize_positioning(&mut self) -> bool {
+        let target_monitor = self.target_monitor.trim();
+        let normalized_monitor = if target_monitor.is_empty() {
+            DEFAULT_TARGET_MONITOR.to_owned()
+        } else {
+            target_monitor.to_owned()
+        };
+        let manual_offset = self
+            .manual_offset
+            .clamp(MINIMUM_MANUAL_OFFSET, MAXIMUM_MANUAL_OFFSET);
+        let changed =
+            self.target_monitor != normalized_monitor || self.manual_offset != manual_offset;
+        self.target_monitor = normalized_monitor;
+        self.manual_offset = manual_offset;
+        changed
+    }
+
+    /// 校验自定义进度颜色，并统一保存为大写六位十六进制格式。
+    pub(crate) fn normalize_custom_progress_color(&mut self) -> bool {
+        let normalized = normalize_hex_color(&self.custom_progress_color)
+            .unwrap_or_else(|| DEFAULT_CUSTOM_PROGRESS_COLOR.to_owned());
+        let changed = self.custom_progress_color != normalized;
+        self.custom_progress_color = normalized;
+        changed
+    }
+}
+
+/// 接受带井号的六位十六进制颜色，并返回统一的大写格式。
+fn normalize_hex_color(value: &str) -> Option<String> {
+    let value = value.trim();
+    let digits = value.strip_prefix('#')?;
+    if digits.len() != 6 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+
+    Some(format!("#{}", digits.to_ascii_uppercase()))
 }
 
 /// 配置文件缺少版本字段时，将其视为第一版结构，以便执行升级迁移。

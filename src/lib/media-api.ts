@@ -112,6 +112,7 @@ export interface MediaSnapshot {
   artist: string
   artworkDataUrl: string | null
   accentColor: string
+  systemAccentColor: string
   playbackStatus: CurrentPlaybackStatus
   capabilities: CurrentPlaybackCapabilities
   timeline: CurrentTimeline | null

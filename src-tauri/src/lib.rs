@@ -106,7 +106,8 @@ pub fn run() {
             commands::media::refresh_selected_media_session,
             commands::runtime::get_runtime_info,
             commands::settings::get_settings,
-            commands::settings::update_settings
+            commands::settings::update_settings,
+            commands::taskbar::get_taskbar_monitors
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
