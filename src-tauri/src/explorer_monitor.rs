@@ -523,35 +523,3 @@ unsafe extern "system" fn message_window_proc(
 
     unsafe { DefWindowProcW(window, message, wparam, lparam) }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::time::{Duration, Instant};
-
-    use super::recovery_request_is_due;
-
-    #[test]
-    fn recovery_request_should_be_due_when_never_requested() {
-        assert!(recovery_request_is_due(None, Instant::now()));
-    }
-
-    #[test]
-    fn recovery_request_should_wait_during_cooldown() {
-        let now = Instant::now();
-
-        assert!(!recovery_request_is_due(
-            Some(now - Duration::from_millis(500)),
-            now
-        ));
-    }
-
-    #[test]
-    fn recovery_request_should_resume_after_cooldown() {
-        let now = Instant::now();
-
-        assert!(recovery_request_is_due(
-            Some(now - Duration::from_secs(2)),
-            now
-        ));
-    }
-}

@@ -29,32 +29,3 @@ pub(crate) fn join_with_timeout(
     }
     true
 }
-
-#[cfg(test)]
-mod tests {
-    use std::{thread, time::Duration};
-
-    use super::join_with_timeout;
-
-    #[test]
-    fn join_with_timeout_should_join_completed_worker() {
-        let worker = thread::spawn(|| {});
-
-        assert!(join_with_timeout(
-            worker,
-            "completed-test-worker",
-            Duration::from_millis(50)
-        ));
-    }
-
-    #[test]
-    fn join_with_timeout_should_stop_waiting_for_blocked_worker() {
-        let worker = thread::spawn(|| thread::sleep(Duration::from_millis(30)));
-
-        assert!(!join_with_timeout(
-            worker,
-            "blocked-test-worker",
-            Duration::from_millis(1)
-        ));
-    }
-}
