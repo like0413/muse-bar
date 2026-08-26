@@ -38,9 +38,7 @@ const recentErrors = computed(() =>
     taskbarDiagnosticError.value,
     taskbarMonitorError.value,
     mediaSnapshotError.value,
-  ]
-    .filter(Boolean)
-    .slice(-5),
+  ].filter(Boolean),
 )
 
 /** 将 Unix 毫秒时间戳转换为本地时间。 */
@@ -143,7 +141,7 @@ function formatStartedAt(startedAtUnixMs: number): string {
           <dd>
             {{
               taskbarDpi
-                ? `${taskbarDpi.physicalRect.width} × ${taskbarDpi.physicalRect.height} px`
+                ? `${taskbarDpi.physicalWidth} × ${taskbarDpi.physicalHeight} px`
                 : '读取中'
             }}
           </dd>
@@ -154,7 +152,7 @@ function formatStartedAt(startedAtUnixMs: number): string {
             }}
           </dd>
           <dt class="text-muted-foreground">占用区数量</dt>
-          <dd>{{ taskbarOccupancy?.regions.length ?? '读取中' }}</dd>
+          <dd>{{ taskbarOccupancy?.regionCount ?? '读取中' }}</dd>
           <dt class="text-muted-foreground">碰撞状态</dt>
           <dd>未启用（按阶段 9.5 的简化定位规则）</dd>
         </dl>

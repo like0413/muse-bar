@@ -16,8 +16,8 @@ import type {
   MediaSnapshot,
 } from '@/lib/media-types'
 import { getSettings, listenToSettingsChanges, type SettingsPayload } from '@/lib/settings-api'
-import { markStartupMilestone } from '@/lib/startup-performance'
 import { TauriListenerScope } from '@/lib/tauri-listener-scope'
+import { getErrorMessage } from '@/lib/utils'
 
 const selectionReasonLabels: Record<MediaSelectionReason, string> = {
   playingPreferred: '最近播放的音乐播放器',
@@ -66,14 +66,13 @@ export const useBarStore = defineStore('bar', () => {
       .catch((error: unknown) => {
         if (lastReportedMediaAvailable === available) lastReportedMediaAvailable = undefined
         if (!listenerScope.isActive) return
-        barWidthDetails.value = `Bar 显隐同步失败：${error instanceof Error ? error.message : String(error)}`
+        barWidthDetails.value = `Bar 显隐同步失败：${getErrorMessage(error)}`
       })
   }
 
   /** 应用 Rust 推送的统一媒体快照，并同步无会话提示。 */
   function applySnapshot(nextSnapshot: MediaSnapshot | null): void {
     snapshotRevision += 1
-    if (nextSnapshot) markStartupMilestone('first-media-snapshot')
     reportMediaAvailability(nextSnapshot !== null && nextSnapshot.playbackStatus !== 'closed')
     const currentSnapshot = snapshot.value
     const trackChanged = hasTrackChanged(currentSnapshot, nextSnapshot)
@@ -142,7 +141,7 @@ export const useBarStore = defineStore('bar', () => {
       )
         return
       mediaSelectionText.value = selection
-        ? `选择：${selectionReasonLabels[selection.reason]}`
+        ? `选择：${selectionReasonLabels[selection]}`
         : '选择：当前没有媒体会话'
     } catch {
       if (
@@ -201,7 +200,7 @@ export const useBarStore = defineStore('bar', () => {
         applySettings(currentSettings)
     } catch (error) {
       if (!listenerScope.isCurrent(lifecycleRevision)) return
-      barWidthDetails.value = `设置监听失败：${error instanceof Error ? error.message : String(error)}`
+      barWidthDetails.value = `设置监听失败：${getErrorMessage(error)}`
     }
   }
 
@@ -215,7 +214,6 @@ export const useBarStore = defineStore('bar', () => {
       startSettingsListener(lifecycleRevision),
     ])
     await startSnapshotListener(lifecycleRevision)
-    if (listenerScope.isCurrent(lifecycleRevision)) markStartupMilestone('listeners-ready')
   }
 
   /** 销毁 Bar 页面建立的全部监听器。 */

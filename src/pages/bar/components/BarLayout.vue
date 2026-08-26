@@ -14,8 +14,7 @@ import {
 
 import { reportBarContentWidth } from '@/lib/bar-layout-api'
 import { readElementAlignment, readLyricsEnabled, readShowControls } from '@/lib/settings-api'
-import { markStartupMilestone } from '@/lib/startup-performance'
-import { cn } from '@/lib/utils'
+import { cn, getErrorMessage } from '@/lib/utils'
 
 import { useBarStore } from '../bar-store'
 import BarArtwork from './BarArtwork.vue'
@@ -135,7 +134,6 @@ function scheduleMeasurement(): void {
             ? `宽度：歌词可用区域 ${measurement.targetWidth}`
             : `宽度：自然 ${measurement.naturalWidth.toFixed(1)}，目标 ${measurement.targetWidth}，上限 ${measurement.maximumWidth}`
         barStore.setBarWidthDetails(details)
-        if (measurement.applied) markStartupMilestone('bar-interactive')
         if (!measurement.applied) {
           // 切换目标显示器时原生 Child 需要先重新挂载，稍后再应用同一次宽度策略。
           lastReportedNaturalWidth = 0
@@ -148,9 +146,7 @@ function scheduleMeasurement(): void {
       })
       .catch((error: unknown) => {
         if (hasUnmounted || revision !== measurementRevision) return
-        barStore.setBarWidthDetails(
-          `宽度测量上报失败：${error instanceof Error ? error.message : String(error)}`,
-        )
+        barStore.setBarWidthDetails(`宽度测量上报失败：${getErrorMessage(error)}`)
       })
   })
 }

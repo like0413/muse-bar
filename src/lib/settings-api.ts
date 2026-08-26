@@ -8,12 +8,10 @@ export type ProgressColorSource = 'artwork' | 'system' | 'custom'
 export type ProgressStyle = 'underline' | 'background-gradient'
 export type TaskbarPosition = 'left' | 'right'
 export type TitleScrollMode = 'continuous' | 'restart' | 'bounce'
-export type WindowMode = 'auto' | 'owner'
 
 /** Rust `AppSettings` 经 camelCase 序列化后的完整 IPC 契约。 */
 export interface SettingsPayload {
   readonly schemaVersion: number
-  readonly windowMode: WindowMode
   readonly position: TaskbarPosition
   readonly targetMonitor: string
   readonly maxWidth: number
@@ -144,11 +142,6 @@ export function readLyricsEnabled(settings: SettingsPayload | undefined): boolea
 export function readLyricsAlignment(settings: SettingsPayload | undefined): LyricsAlignment {
   const alignment = settings?.lyricsAlignment
   return alignment === 'left' || alignment === 'right' ? alignment : 'center'
-}
-
-/** 从设置载荷中读取窗口宿主模式。 */
-export function readWindowMode(settings: SettingsPayload | undefined): WindowMode {
-  return settings?.windowMode === 'owner' ? 'owner' : 'auto'
 }
 
 /** 从设置载荷中读取开机启动开关。 */

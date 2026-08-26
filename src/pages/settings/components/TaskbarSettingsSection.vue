@@ -33,7 +33,6 @@ import {
   readMaximumWidth,
   readTargetMonitor,
   readTaskbarPosition,
-  readWindowMode,
   type LyricsAlignment,
   type TaskbarPosition,
 } from '@/lib/settings-api'
@@ -57,7 +56,6 @@ const targetMonitorSelection = computed(() => {
 })
 const lyricsEnabled = computed(() => readLyricsEnabled(settings.value))
 const currentLyricsAlignment = computed(() => readLyricsAlignment(settings.value))
-const currentWindowMode = computed(() => readWindowMode(settings.value))
 
 const positionOptions: ReadonlyArray<{ value: TaskbarPosition; label: string }> = [
   { value: 'left', label: '靠左' },

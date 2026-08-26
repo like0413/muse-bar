@@ -2,21 +2,10 @@ import { invoke } from '@tauri-apps/api/core'
 
 export type TaskbarOccupancySource = 'uiAutomation' | 'win32Fallback'
 
-export interface TaskbarOccupiedRegion {
-  name: string
-  className: string
-  left: number
-  top: number
-  right: number
-  bottom: number
-  width: number
-  height: number
-}
-
 export interface TaskbarOccupancy {
   source: TaskbarOccupancySource
   fallbackReason: string | null
-  regions: TaskbarOccupiedRegion[]
+  regionCount: number
 }
 
 export interface TaskbarIdentity {
@@ -24,20 +13,11 @@ export interface TaskbarIdentity {
   explorerProcessId: number
 }
 
-export interface TaskbarRect {
-  left: number
-  top: number
-  right: number
-  bottom: number
-  width: number
-  height: number
-}
-
 export interface TaskbarDpi {
   dpi: number
   scaleFactor: number
-  physicalRect: TaskbarRect
-  logicalRect: TaskbarRect
+  physicalWidth: number
+  physicalHeight: number
 }
 
 export interface WindowsVersion {

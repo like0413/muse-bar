@@ -48,7 +48,6 @@ pub struct AppState {
     application_version: String,
     started_at: SystemTime,
     settings: RwLock<AppSettings>,
-    bar_width_measurement: RwLock<Option<BarWidthMeasurement>>,
     bar_width_animation_revision: Arc<AtomicU64>,
     bar_enabled_by_user: AtomicBool,
     bar_media_available: AtomicBool,
@@ -61,7 +60,6 @@ impl AppState {
             application_version: application_version.into(),
             started_at: SystemTime::now(),
             settings: RwLock::new(settings),
-            bar_width_measurement: RwLock::new(None),
             bar_width_animation_revision: Arc::new(AtomicU64::new(0)),
             bar_enabled_by_user: AtomicBool::new(true),
             bar_media_available: AtomicBool::new(false),
@@ -126,20 +124,13 @@ impl AppState {
             Some(width) => (width.max(1), BarWidthMode::AvailableArea),
             None => (rounded_width.min(maximum_width), BarWidthMode::Content),
         };
-        let measurement = BarWidthMeasurement {
+        Ok(BarWidthMeasurement {
             natural_width,
             target_width,
             maximum_width,
             mode,
             applied: true,
-        };
-        let mut current_measurement = self
-            .bar_width_measurement
-            .write()
-            .map_err(|_| "无法保存 Bar 宽度：宽度状态锁已损坏".to_owned())?;
-        *current_measurement = Some(measurement);
-
-        Ok(measurement)
+        })
     }
 
     /// 生成新宽度动画的版本号；旧动画发现版本落后后会停止提交窗口变化。

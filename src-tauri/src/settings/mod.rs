@@ -49,16 +49,6 @@ pub(crate) enum SettingsPersistenceError {
     VerificationMismatch,
 }
 
-/// Bar 窗口与 Windows 任务栏之间的宿主模式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum WindowMode {
-    /// 使用当前默认宿主策略；现阶段只启用 Child，Owner 回退将在后续版本实现。
-    Auto,
-    /// 为将来的独立 Owner 宿主预留，现阶段不启用。
-    Owner,
-}
-
 /// Bar 在任务栏可用区域中的目标位置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -132,7 +122,6 @@ pub enum ProgressColorSource {
 pub struct AppSettings {
     #[serde(default = "initial_settings_schema_version")]
     pub schema_version: u32,
-    pub window_mode: WindowMode,
     pub position: TaskbarPosition,
     pub target_monitor: String,
     pub max_width: u32,
@@ -157,7 +146,6 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             schema_version: CURRENT_SETTINGS_SCHEMA_VERSION,
-            window_mode: WindowMode::Auto,
             position: TaskbarPosition::Right,
             target_monitor: DEFAULT_TARGET_MONITOR.to_owned(),
             max_width: DEFAULT_MAX_WIDTH,

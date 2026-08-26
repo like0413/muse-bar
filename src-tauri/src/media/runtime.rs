@@ -10,7 +10,7 @@ use std::{
 use crate::background_worker::{join_with_timeout, WORKER_SHUTDOWN_TIMEOUT};
 
 use super::{
-    activity::{session_key, MediaActivityTracker, MediaSessionActivity, SelectedMediaSession},
+    activity::{session_key, MediaActivityTracker, MediaSelectionReason, MediaSessionActivity},
     artwork::{read_artwork, read_windows_accent_color},
     control::{execute_control_action, ControlAction, MediaControlError},
     model::{
@@ -370,7 +370,7 @@ impl SystemMediaManager {
     pub(crate) fn refresh_selected_media_session<R: Runtime>(
         &self,
         app: &AppHandle<R>,
-    ) -> Result<Option<SelectedMediaSession>, String> {
+    ) -> Result<Option<MediaSelectionReason>, String> {
         self.with_runtime(app, |runtime| runtime.refresh_selected_media_session(app))
     }
 
@@ -411,21 +411,16 @@ impl SystemMediaRuntime {
             app,
             Arc::clone(&current_session_observation),
             Arc::clone(&media_metadata_loader),
-            Some(media_activity_tracker.clone()),
+            media_activity_tracker.clone(),
         )?;
-        let current_session_changed_token = match subscribe_to_current_session_changed(
-            &manager,
-            app,
-            Arc::clone(&current_session_observation),
-            Arc::clone(&media_metadata_loader),
-            Some(media_activity_tracker.clone()),
-        ) {
-            Ok(token) => token,
-            Err(error) => {
-                let _ = manager.RemoveSessionsChanged(sessions_changed_token);
-                return Err(error);
-            }
-        };
+        let current_session_changed_token =
+            match subscribe_to_current_session_changed(&manager, media_activity_tracker.clone()) {
+                Ok(token) => token,
+                Err(error) => {
+                    let _ = manager.RemoveSessionsChanged(sessions_changed_token);
+                    return Err(error);
+                }
+            };
 
         if let Err(error) = bind_current_session(
             &manager,
@@ -468,7 +463,7 @@ impl SystemMediaRuntime {
     pub(crate) fn refresh_selected_media_session<R: Runtime>(
         &self,
         app: &AppHandle<R>,
-    ) -> Result<Option<SelectedMediaSession>, String> {
+    ) -> Result<Option<MediaSelectionReason>, String> {
         select_and_bind_media_session(
             &self.manager,
             &self.media_activity_tracker,
@@ -526,7 +521,7 @@ fn select_and_bind_media_session<R: Runtime>(
     app: &AppHandle<R>,
     observation: &Arc<Mutex<CurrentSessionObservation>>,
     media_metadata_loader: &Arc<MediaMetadataLoader>,
-) -> Result<Option<SelectedMediaSession>, String> {
+) -> Result<Option<MediaSelectionReason>, String> {
     let windows_current_session = manager.GetCurrentSession().ok();
     let (selected_session, selection) = activity_tracker.select_session(windows_current_session)?;
     let selected_key = selected_session.as_ref().map(session_key);
@@ -565,7 +560,7 @@ fn subscribe_to_sessions_changed<R: Runtime>(
     app: &AppHandle<R>,
     observation: Arc<Mutex<CurrentSessionObservation>>,
     media_metadata_loader: Arc<MediaMetadataLoader>,
-    media_activity_tracker: Option<MediaActivityTracker>,
+    media_activity_tracker: MediaActivityTracker,
 ) -> Result<i64, String> {
     let app = app.clone();
     // `TypedEventHandler::new` 无法从闭包体反推出两个 WinRT 泛型，
@@ -580,18 +575,16 @@ fn subscribe_to_sessions_changed<R: Runtime>(
                 return Ok(());
             };
 
-            if let Some(activity_tracker) = &media_activity_tracker {
-                if let Err(error) = activity_tracker.refresh_sessions(manager, &app) {
-                    log::warn!("媒体会话列表变化后刷新活动监听失败：{error}");
-                } else if let Err(error) = select_and_bind_media_session(
-                    manager,
-                    activity_tracker,
-                    &app,
-                    &observation,
-                    &media_metadata_loader,
-                ) {
-                    log::warn!("媒体会话列表变化后重新选择观察会话失败：{error}");
-                }
+            if let Err(error) = media_activity_tracker.refresh_sessions(manager, &app) {
+                log::warn!("媒体会话列表变化后刷新活动监听失败：{error}");
+            } else if let Err(error) = select_and_bind_media_session(
+                manager,
+                &media_activity_tracker,
+                &app,
+                &observation,
+                &media_metadata_loader,
+            ) {
+                log::warn!("媒体会话列表变化后重新选择观察会话失败：{error}");
             }
 
             match collect_session_identities(manager) {
@@ -619,14 +612,10 @@ fn subscribe_to_sessions_changed<R: Runtime>(
 }
 
 /// 监听 Windows 当前媒体会话变化，并将元数据监听切换到新的会话。
-fn subscribe_to_current_session_changed<R: Runtime>(
+fn subscribe_to_current_session_changed(
     manager: &GlobalSystemMediaTransportControlsSessionManager,
-    app: &AppHandle<R>,
-    observation: Arc<Mutex<CurrentSessionObservation>>,
-    media_metadata_loader: Arc<MediaMetadataLoader>,
-    media_activity_tracker: Option<MediaActivityTracker>,
+    media_activity_tracker: MediaActivityTracker,
 ) -> Result<i64, String> {
-    let app = app.clone();
     let handler: TypedEventHandler<
         GlobalSystemMediaTransportControlsSessionManager,
         CurrentSessionChangedEventArgs,
@@ -637,14 +626,8 @@ fn subscribe_to_current_session_changed<R: Runtime>(
                 return Ok(());
             };
 
-            if let Some(activity_tracker) = &media_activity_tracker {
-                let current_session = manager.GetCurrentSession().ok();
-                activity_tracker.mark_current_session(current_session.as_ref());
-            } else if let Err(error) =
-                bind_current_session(manager, &app, &observation, &media_metadata_loader)
-            {
-                log::warn!("切换 Windows 当前媒体会话监听失败：{error}");
-            }
+            let current_session = manager.GetCurrentSession().ok();
+            media_activity_tracker.mark_current_session(current_session.as_ref());
 
             Ok(())
         },

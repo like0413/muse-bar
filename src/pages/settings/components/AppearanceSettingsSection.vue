@@ -2,8 +2,6 @@
 import { storeToRefs } from 'pinia'
 import { computed } from 'vue'
 
-import type { SettingsPatch } from '@/lib/settings-api'
-
 import { useSettingsStore } from '../settings-store'
 import AppearanceAlignmentCard from './AppearanceAlignmentCard.vue'
 import AppearanceColorModeCard from './AppearanceColorModeCard.vue'
@@ -14,10 +12,6 @@ import AppearanceTitleScrollCard from './AppearanceTitleScrollCard.vue'
 const settingsStore = useSettingsStore()
 const { settings, mediaSnapshot } = storeToRefs(settingsStore)
 const controlsDisabled = computed(() => !settings.value)
-
-function saveSettingsPatch(patch: SettingsPatch): void {
-  void settingsStore.saveSettingsPatch(patch)
-}
 </script>
 
 <template>
@@ -25,28 +19,28 @@ function saveSettingsPatch(patch: SettingsPatch): void {
     <AppearanceColorModeCard
       :settings="settings"
       :disabled="controlsDisabled"
-      @change="saveSettingsPatch"
+      @change="settingsStore.saveSettingsPatch"
     />
     <AppearanceControlsCard
       :settings="settings"
       :disabled="controlsDisabled"
-      @change="saveSettingsPatch"
+      @change="settingsStore.saveSettingsPatch"
     />
     <AppearanceAlignmentCard
       :settings="settings"
       :disabled="controlsDisabled"
-      @change="saveSettingsPatch"
+      @change="settingsStore.saveSettingsPatch"
     />
     <AppearanceProgressCard
       :settings="settings"
       :disabled="controlsDisabled"
       :media-snapshot="mediaSnapshot"
-      @change="saveSettingsPatch"
+      @change="settingsStore.saveSettingsPatch"
     />
     <AppearanceTitleScrollCard
       :settings="settings"
       :disabled="controlsDisabled"
-      @change="saveSettingsPatch"
+      @change="settingsStore.saveSettingsPatch"
     />
   </div>
 </template>

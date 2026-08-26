@@ -4,6 +4,14 @@ use super::TaskbarRect;
 
 const EDGE_COMPONENT_ZONE_DIVISOR: i32 = 3;
 
+struct HorizontalBounds {
+    left_zone_end: i32,
+    right_zone_start: i32,
+    left_edge: i32,
+    right_edge: i32,
+    central: Option<(i32, i32)>,
+}
+
 /// 歌词模式可以占用的一段连续任务栏屏幕区域。
 #[derive(Debug, Clone, Copy)]
 pub struct AvailableSpan {
@@ -38,19 +46,9 @@ impl OccupiedRect {
         self.left
     }
 
-    /// 返回矩形上边界。
-    pub fn top(self) -> i32 {
-        self.top
-    }
-
     /// 返回矩形右边界。
     pub fn right(self) -> i32 {
         self.right
-    }
-
-    /// 返回矩形下边界。
-    pub fn bottom(self) -> i32 {
-        self.bottom
     }
 
     /// 返回矩形宽度。
@@ -73,11 +71,6 @@ pub struct OccupiedRegion {
 }
 
 impl OccupiedRegion {
-    /// 返回 UI Automation 名称或 Win32 回退名称。
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
     /// 返回控件类名，供诊断不同 Windows 版本的任务栏结构。
     pub fn class_name(&self) -> &str {
         &self.class_name
@@ -98,43 +91,11 @@ pub fn resolve_bar_screen_x(
 ) -> i32 {
     let minimum_x = taskbar_rect.left();
     let maximum_x = taskbar_rect.right().saturating_sub(bar_width);
-    let taskbar_width = taskbar_rect.width();
-    let left_zone_end = taskbar_rect
-        .left()
-        .saturating_add(taskbar_width / EDGE_COMPONENT_ZONE_DIVISOR);
-    let right_zone_start = taskbar_rect
-        .right()
-        .saturating_sub(taskbar_width / EDGE_COMPONENT_ZONE_DIVISOR);
-    let semantic_central_bounds = central_taskbar_bounds(regions);
+    let bounds = horizontal_bounds(taskbar_rect, regions);
 
     let target_x = match position {
-        TaskbarPosition::Left => regions
-            .iter()
-            .filter(|region| !is_central_taskbar_button(region))
-            .filter(|region| {
-                // 开始、搜索等中央按钮的内部 XAML 元素类名各不相同，
-                // 只要矩形仍与中央按钮组重叠，就不能作为左侧组件参与定位。
-                semantic_central_bounds.map_or(true, |(central_left, _)| {
-                    region.rect().right() <= central_left
-                })
-            })
-            .filter(|region| region.rect().right() <= left_zone_end)
-            .map(|region| region.rect().right())
-            .max()
-            .unwrap_or(taskbar_rect.left()),
-        TaskbarPosition::Right => regions
-            .iter()
-            .filter(|region| !is_central_taskbar_button(region))
-            .filter(|region| {
-                semantic_central_bounds.map_or(true, |(_, central_right)| {
-                    region.rect().left() >= central_right
-                })
-            })
-            .filter(|region| region.rect().left() >= right_zone_start)
-            .map(|region| region.rect().left())
-            .min()
-            .unwrap_or(taskbar_rect.right())
-            .saturating_sub(bar_width),
+        TaskbarPosition::Left => bounds.left_edge,
+        TaskbarPosition::Right => bounds.right_edge.saturating_sub(bar_width),
     };
 
     target_x.clamp(minimum_x, maximum_x.max(minimum_x))
@@ -147,41 +108,8 @@ pub fn resolve_available_span(
     regions: &[OccupiedRegion],
 ) -> AvailableSpan {
     let taskbar_width = taskbar_rect.width();
-    let left_zone_end = taskbar_rect
-        .left()
-        .saturating_add(taskbar_width / EDGE_COMPONENT_ZONE_DIVISOR);
-    let right_zone_start = taskbar_rect
-        .right()
-        .saturating_sub(taskbar_width / EDGE_COMPONENT_ZONE_DIVISOR);
+    let bounds = horizontal_bounds(taskbar_rect, regions);
     let center_x = taskbar_rect.left().saturating_add(taskbar_width / 2);
-
-    let semantic_central_bounds = central_taskbar_bounds(regions);
-    let left_edge = regions
-        .iter()
-        .filter(|region| !is_central_taskbar_button(region))
-        .filter(|region| {
-            // 搜索按钮等 XAML 控件会暴露 AnimatedVisualPlayer 之类的内部子元素。
-            // 这些子元素虽然类名不同，却仍位于中央按钮组内，不能误判为左侧组件。
-            semantic_central_bounds.map_or(true, |(central_left, _)| {
-                region.rect().right() <= central_left
-            })
-        })
-        .filter(|region| region.rect().right() <= left_zone_end)
-        .map(|region| region.rect().right())
-        .max()
-        .unwrap_or(taskbar_rect.left());
-    let right_edge = regions
-        .iter()
-        .filter(|region| !is_central_taskbar_button(region))
-        .filter(|region| {
-            semantic_central_bounds.map_or(true, |(_, central_right)| {
-                region.rect().left() >= central_right
-            })
-        })
-        .filter(|region| region.rect().left() >= right_zone_start)
-        .map(|region| region.rect().left())
-        .min()
-        .unwrap_or(taskbar_rect.right());
 
     // 过滤掉横跨大部分任务栏的框架容器，只保留中部按钮组及其实际子项。
     let (central_left, central_right) = regions
@@ -189,8 +117,8 @@ pub fn resolve_available_span(
         .filter_map(|region| {
             let rect = region.rect();
             (rect.width() < taskbar_width * 2 / 3
-                && rect.right() > left_zone_end
-                && rect.left() < right_zone_start)
+                && rect.right() > bounds.left_zone_end
+                && rect.left() < bounds.right_zone_start)
                 .then_some((rect.left(), rect.right()))
         })
         .fold((None::<i32>, None::<i32>), |(left, right), rect| {
@@ -199,14 +127,14 @@ pub fn resolve_available_span(
                 Some(right.map_or(rect.1, |value| value.max(rect.1))),
             )
         });
-    let (central_left, central_right) = semantic_central_bounds.unwrap_or((
+    let (central_left, central_right) = bounds.central.unwrap_or((
         central_left.unwrap_or(center_x),
         central_right.unwrap_or(center_x),
     ));
 
     let (left, right) = match position {
-        TaskbarPosition::Left => (left_edge, central_left),
-        TaskbarPosition::Right => (central_right, right_edge),
+        TaskbarPosition::Left => (bounds.left_edge, central_left),
+        TaskbarPosition::Right => (central_right, bounds.right_edge),
     };
     // XAML 正在重新布局时可能短暂只返回一部分元素。遇到反向边界时使用任务栏
     // 外沿作为保守回退，绝不能把 Bar 折叠成 1 像素。
@@ -222,6 +150,38 @@ pub fn resolve_available_span(
     let right = right.clamp(left.saturating_add(1), taskbar_rect.right());
 
     AvailableSpan { left, right }
+}
+
+/// 汇总任务栏两侧组件边界，供普通定位与歌词可用区域计算复用。
+fn horizontal_bounds(taskbar_rect: &TaskbarRect, regions: &[OccupiedRegion]) -> HorizontalBounds {
+    let zone_width = taskbar_rect.width() / EDGE_COMPONENT_ZONE_DIVISOR;
+    let left_zone_end = taskbar_rect.left().saturating_add(zone_width);
+    let right_zone_start = taskbar_rect.right().saturating_sub(zone_width);
+    let central = central_taskbar_bounds(regions);
+    let edge_regions = regions
+        .iter()
+        .filter(|region| !is_central_taskbar_button(region));
+    let left_edge = edge_regions
+        .clone()
+        .filter(|region| central.map_or(true, |(left, _)| region.rect().right() <= left))
+        .filter(|region| region.rect().right() <= left_zone_end)
+        .map(|region| region.rect().right())
+        .max()
+        .unwrap_or(taskbar_rect.left());
+    let right_edge = edge_regions
+        .filter(|region| central.map_or(true, |(_, right)| region.rect().left() >= right))
+        .filter(|region| region.rect().left() >= right_zone_start)
+        .map(|region| region.rect().left())
+        .min()
+        .unwrap_or(taskbar_rect.right());
+
+    HorizontalBounds {
+        left_zone_end,
+        right_zone_start,
+        left_edge,
+        right_edge,
+        central,
+    }
 }
 
 /// 识别 Windows 11 中央开始按钮、系统按钮和任务按钮的 UI Automation 类型。

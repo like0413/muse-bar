@@ -1,8 +1,8 @@
 use tauri::{AppHandle, State};
 
 use crate::media::{
-    ControlAction, MediaControlError, MediaSessionActivity, MediaSessionIdentity, MediaSnapshot,
-    SelectedMediaSession, SystemMediaManager,
+    ControlAction, MediaControlError, MediaSelectionReason, MediaSessionActivity,
+    MediaSessionIdentity, MediaSnapshot, SystemMediaManager,
 };
 
 /// 返回全部媒体会话的原始来源标识和播放器分类。
@@ -28,7 +28,7 @@ pub fn get_media_session_activities(
 pub fn refresh_selected_media_session(
     app: AppHandle,
     state: State<'_, SystemMediaManager>,
-) -> Result<Option<SelectedMediaSession>, String> {
+) -> Result<Option<MediaSelectionReason>, String> {
     state.refresh_selected_media_session(&app)
 }
 

@@ -5,7 +5,6 @@ use std::{
         Arc, Mutex,
     },
     thread::{self, JoinHandle},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::Serialize;
@@ -52,16 +51,6 @@ pub(crate) enum MediaSelectionReason {
     WindowsCurrentFallback,
 }
 
-/// Rust 选择器返回给前端诊断的当前会话身份。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SelectedMediaSession {
-    session_key: u64,
-    source_app_id: String,
-    player_kind: MediaPlayerKind,
-    reason: MediaSelectionReason,
-}
-
 /// 设置页可观察的单个媒体会话活动状态。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,10 +60,6 @@ pub(crate) struct MediaSessionActivity {
     player_kind: MediaPlayerKind,
     title: Option<String>,
     artist: Option<String>,
-    is_playing: bool,
-    is_paused: bool,
-    last_activity_at_unix_ms: Option<u64>,
-    activity_sequence: Option<u64>,
     last_activity_reason: Option<MediaActivityReason>,
 }
 
@@ -86,7 +71,6 @@ struct ActivityRecord {
     artist: Option<String>,
     is_playing: bool,
     is_paused: bool,
-    last_activity_at_unix_ms: Option<u64>,
     activity_sequence: Option<u64>,
     last_activity_reason: Option<MediaActivityReason>,
 }
@@ -265,7 +249,6 @@ impl MediaActivityTracker {
                         artist: None,
                         is_playing: false,
                         is_paused: false,
-                        last_activity_at_unix_ms: None,
                         activity_sequence: None,
                         last_activity_reason: None,
                     });
@@ -328,7 +311,7 @@ impl MediaActivityTracker {
     ) -> Result<
         (
             Option<GlobalSystemMediaTransportControlsSession>,
-            Option<SelectedMediaSession>,
+            Option<MediaSelectionReason>,
         ),
         String,
     > {
@@ -357,15 +340,7 @@ impl MediaActivityTracker {
                 } else {
                     MediaSelectionReason::LastPausedPreferred
                 };
-                return Ok((
-                    Some(session),
-                    Some(SelectedMediaSession {
-                        session_key: selected_key,
-                        source_app_id: record.source_app_id.clone(),
-                        player_kind: record.player_kind,
-                        reason,
-                    }),
-                ));
+                return Ok((Some(session), Some(reason)));
             }
         }
 
@@ -377,18 +352,10 @@ impl MediaActivityTracker {
             if record.player_kind == MediaPlayerKind::Other || record.title.is_none() {
                 return None;
             }
-            Some((observation.session.clone(), observation.session_key, record))
+            Some(observation.session.clone())
         });
-        if let Some((session, session_key, record)) = detected_preferred {
-            return Ok((
-                Some(session),
-                Some(SelectedMediaSession {
-                    session_key,
-                    source_app_id: record.source_app_id.clone(),
-                    player_kind: record.player_kind,
-                    reason: MediaSelectionReason::DetectedPreferred,
-                }),
-            ));
+        if let Some(session) = detected_preferred {
+            return Ok((Some(session), Some(MediaSelectionReason::DetectedPreferred)));
         }
 
         // SessionsChanged 与 CurrentSessionChanged 并不保证到达顺序。播放器刚退出时，
@@ -402,16 +369,7 @@ impl MediaActivityTracker {
             {
                 return None;
             }
-            let source_app_id = session.SourceAppUserModelId().ok()?.to_string();
-            Some((
-                session,
-                SelectedMediaSession {
-                    session_key,
-                    player_kind: identify_media_player(&source_app_id),
-                    source_app_id,
-                    reason: MediaSelectionReason::WindowsCurrentFallback,
-                },
-            ))
+            Some((session, MediaSelectionReason::WindowsCurrentFallback))
         });
         Ok(match fallback {
             Some((session, selection)) => (Some(session), Some(selection)),
@@ -641,9 +599,7 @@ fn apply_activity_request(
 fn mark_activity(state: &mut ActivityState, session_key: u64, reason: MediaActivityReason) {
     state.next_activity_sequence = state.next_activity_sequence.saturating_add(1);
     let sequence = state.next_activity_sequence;
-    let timestamp = current_unix_time_ms();
     if let Some(record) = state.records.get_mut(&session_key) {
-        record.last_activity_at_unix_ms = Some(timestamp);
         record.activity_sequence = Some(sequence);
         record.last_activity_reason = Some(reason);
     }
@@ -701,15 +657,6 @@ pub(crate) fn session_key(session: &GlobalSystemMediaTransportControlsSession) -
         .unwrap_or_else(|_| session.as_raw() as usize as u64)
 }
 
-/// 返回当前 Unix 毫秒时间；系统时钟异常时使用零值而不是中断活动跟踪。
-fn current_unix_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
-        .unwrap_or(0)
-}
-
 /// 将内部活动记录转换为按会话标识稳定排序的诊断数组。
 fn activity_snapshots(state: &ActivityState) -> Vec<MediaSessionActivity> {
     let mut snapshots = state
@@ -721,10 +668,6 @@ fn activity_snapshots(state: &ActivityState) -> Vec<MediaSessionActivity> {
             player_kind: record.player_kind,
             title: record.title.clone(),
             artist: record.artist.clone(),
-            is_playing: record.is_playing,
-            is_paused: record.is_paused,
-            last_activity_at_unix_ms: record.last_activity_at_unix_ms,
-            activity_sequence: record.activity_sequence,
             last_activity_reason: record.last_activity_reason,
         })
         .collect::<Vec<_>>();

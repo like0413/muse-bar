@@ -11,7 +11,7 @@ import {
 } from '@/lib/media-event-api'
 import { getCurrentMediaSnapshot } from '@/lib/media-query-api'
 import type { MediaSessionActivity, MediaSessionIdentity, MediaSnapshot } from '@/lib/media-types'
-import { getRuntimeInfo } from '@/lib/runtime-info'
+import { getRuntimeInfo, type RuntimeInfo } from '@/lib/runtime-info'
 import {
   getSettings,
   updateSettings,
@@ -31,8 +31,8 @@ import {
 } from '@/lib/taskbar-diagnostics-api'
 import { getTaskbarMonitors, type TaskbarMonitor } from '@/lib/taskbar-monitor-api'
 import { TauriListenerScope } from '@/lib/tauri-listener-scope'
+import { getErrorMessage } from '@/lib/utils'
 import { readCurrentWindowLabel } from '@/lib/window-label'
-import type { RuntimeInfo } from '@/types/runtime-info'
 
 export const useSettingsStore = defineStore('settings', () => {
   const runtimeInfo = shallowRef<RuntimeInfo>()
@@ -85,7 +85,7 @@ export const useSettingsStore = defineStore('settings', () => {
           settings.value = await updateSettings({ ...settings.value, ...patch })
         } catch (error) {
           pendingSettingsPatch = undefined
-          settingsError.value = error instanceof Error ? error.message : String(error)
+          settingsError.value = getErrorMessage(error)
           return
         }
       }
@@ -105,8 +105,8 @@ export const useSettingsStore = defineStore('settings', () => {
     if (windowsResult.status === 'fulfilled') windowsVersion.value = windowsResult.value
 
     const errors: string[] = []
-    if (runtimeResult.status === 'rejected') errors.push(String(runtimeResult.reason))
-    if (windowsResult.status === 'rejected') errors.push(String(windowsResult.reason))
+    if (runtimeResult.status === 'rejected') errors.push(getErrorMessage(runtimeResult.reason))
+    if (windowsResult.status === 'rejected') errors.push(getErrorMessage(windowsResult.reason))
     runtimeError.value = errors.join('；')
   }
 
@@ -118,8 +118,7 @@ export const useSettingsStore = defineStore('settings', () => {
       settings.value = currentSettings
       settingsError.value = ''
     } catch (error) {
-      if (listenerScope.isCurrent(lifecycleRevision))
-        settingsError.value = error instanceof Error ? error.message : String(error)
+      if (listenerScope.isCurrent(lifecycleRevision)) settingsError.value = getErrorMessage(error)
     }
   }
 
@@ -132,7 +131,7 @@ export const useSettingsStore = defineStore('settings', () => {
       taskbarMonitorError.value = ''
     } catch (error) {
       if (listenerScope.isCurrent(lifecycleRevision))
-        taskbarMonitorError.value = error instanceof Error ? error.message : String(error)
+        taskbarMonitorError.value = getErrorMessage(error)
     }
   }
 
@@ -153,7 +152,7 @@ export const useSettingsStore = defineStore('settings', () => {
       taskbarOccupancy.value = occupancy
     } catch (error) {
       if (listenerScope.isActive && requestRevision === taskbarDiagnosticsRevision)
-        taskbarDiagnosticError.value = error instanceof Error ? error.message : String(error)
+        taskbarDiagnosticError.value = getErrorMessage(error)
     } finally {
       if (requestRevision === taskbarDiagnosticsRevision) isRefreshingDiagnostics.value = false
     }
@@ -167,7 +166,7 @@ export const useSettingsStore = defineStore('settings', () => {
     try {
       await openLogDirectory()
     } catch (error) {
-      logDirectoryError.value = error instanceof Error ? error.message : String(error)
+      logDirectoryError.value = getErrorMessage(error)
     } finally {
       isOpeningLogDirectory.value = false
     }
@@ -214,7 +213,7 @@ export const useSettingsStore = defineStore('settings', () => {
         mediaSnapshot.value = snapshot
     } catch (error) {
       if (listenerScope.isCurrent(lifecycleRevision))
-        mediaSnapshotError.value = error instanceof Error ? error.message : String(error)
+        mediaSnapshotError.value = getErrorMessage(error)
     }
   }
 
@@ -235,7 +234,7 @@ export const useSettingsStore = defineStore('settings', () => {
         mediaSessionIdentities.value = identities
     } catch (error) {
       if (listenerScope.isCurrent(lifecycleRevision))
-        mediaSnapshotError.value = error instanceof Error ? error.message : String(error)
+        mediaSnapshotError.value = getErrorMessage(error)
     }
   }
 
@@ -256,7 +255,7 @@ export const useSettingsStore = defineStore('settings', () => {
         mediaSessionActivities.value = activities
     } catch (error) {
       if (listenerScope.isCurrent(lifecycleRevision))
-        mediaSnapshotError.value = error instanceof Error ? error.message : String(error)
+        mediaSnapshotError.value = getErrorMessage(error)
     }
   }
 

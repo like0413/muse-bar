@@ -9,7 +9,7 @@ mod system;
 
 pub(crate) use bar::apply_content_width;
 pub(crate) use explorer::{request_recovery, start as start_explorer_monitor, ExplorerMonitor};
-pub(crate) use occupancy::{read_occupied_regions, OccupiedRegion};
+pub(crate) use occupancy::read_occupied_regions;
 pub(crate) use system::{
     find_main_taskbar, list_taskbar_monitors, read_taskbar_dpi, read_taskbar_rect, TaskbarDpi,
     TaskbarIdentity, TaskbarMonitor, TaskbarRect,

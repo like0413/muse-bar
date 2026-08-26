@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { ButtonGroup } from '@/components/ui/button-group'
 import { controlMedia } from '@/lib/media-control-api'
 import type { ControlAction } from '@/lib/media-types'
+import { getErrorMessage } from '@/lib/utils'
 
 import { useBarStore } from '../bar-store'
 
@@ -21,12 +22,6 @@ const canTogglePlayPause = computed(() => {
   return isPlaying.value ? currentCapabilities.canPause : currentCapabilities.canPlay
 })
 
-/** 从 Tauri 的未知拒绝值中提取可读的结构化控制错误。 */
-function readControlErrorMessage(error: unknown): string {
-  if (typeof error === 'object' && error && 'message' in error) return String(error.message)
-  return String(error)
-}
-
 /** 阻止同一会话收到并发操作，并把播放器返回的失败原因写入诊断信息。 */
 async function performControl(action: ControlAction): Promise<void> {
   if (isControlPending.value) return
@@ -36,7 +31,7 @@ async function performControl(action: ControlAction): Promise<void> {
   try {
     await controlMedia(action)
   } catch (error) {
-    barStore.setControlError(`控制失败：${readControlErrorMessage(error)}`)
+    barStore.setControlError(`控制失败：${getErrorMessage(error)}`)
   } finally {
     isControlPending.value = false
   }

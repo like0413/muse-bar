@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted } from 'vue'
 
 import { openSettingsWindow } from '@/lib/settings-window'
+import { getErrorMessage } from '@/lib/utils'
 
 import { useBarStore } from './bar-store'
 import BarLayout from './components/BarLayout.vue'
@@ -14,8 +15,7 @@ async function handleOpenSettings(): Promise<void> {
   try {
     await openSettingsWindow()
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    barStore.setSettingsWindowError(`设置页打开失败：${message}`)
+    barStore.setSettingsWindowError(`设置页打开失败：${getErrorMessage(error)}`)
   }
 }
 

@@ -7,7 +7,7 @@ mod model;
 mod runtime;
 mod selection;
 
-pub(crate) use activity::{MediaSessionActivity, SelectedMediaSession};
+pub(crate) use activity::{MediaSelectionReason, MediaSessionActivity};
 pub(crate) use control::{ControlAction, MediaControlError};
 pub(crate) use model::{MediaSessionIdentity, MediaSnapshot};
 pub(crate) use runtime::SystemMediaManager;

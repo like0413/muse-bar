@@ -406,8 +406,6 @@ fn recover_bar_once(app: &AppHandle) -> Result<(), String> {
                 let _ = bar_window.destroy();
                 format!("无法在 Bar 宿主内创建 Child WebView：{error}")
             })?;
-        crate::startup_metrics::mark_bar_webview_created();
-
         // 宽度动画只调整原生宿主，由 Tauri 按父窗口客户区同步 Child WebView，
         // 避免两个独立的尺寸消息队列产生短暂空隙或错误的自动缩放比例。
         if let Err(error) = bar_webview.set_auto_resize(true) {
