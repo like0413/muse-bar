@@ -71,7 +71,15 @@ pub(crate) fn read_artwork(
         .unwrap_or_default();
     let content_type = detect_artwork_content_type(&bytes, &reported_content_type);
     // 当前函数运行在专用媒体元数据线程中，图片解码不会阻塞 Tauri 命令或 WebView。
-    let accent_color = extract_dominant_color(&bytes)?;
+    // WebP 可能来自网页播放器，因此与常见的 JPEG/PNG 一并解码主色。
+    // WebView 仍可直接展示少见的 BMP/GIF；主色提取失败时保留封面并回退系统强调色。
+    let accent_color = match extract_dominant_color(&bytes) {
+        Ok(color) => color,
+        Err(error) => {
+            log::warn!("无法从媒体封面提取主色，将使用系统强调色：{error}");
+            None
+        }
+    };
     let encoded = BASE64_STANDARD.encode(&bytes);
 
     Ok(Some(MediaArtwork {

@@ -4,12 +4,19 @@ import { shallowRef } from 'vue'
 import { setBarMediaAvailable } from '@/lib/bar-window'
 import {
   listenToCurrentMediaSnapshotChanges,
+  listenToCurrentPlaybackStateChanges,
   listenToCurrentTimelineChanges,
   listenToMediaSessionActivityChanges,
 } from '@/lib/media-event-api'
 import { getCurrentMediaSnapshot, refreshSelectedMediaSession } from '@/lib/media-query-api'
-import type { CurrentTimeline, MediaSelectionReason, MediaSnapshot } from '@/lib/media-types'
+import type {
+  CurrentPlaybackState,
+  CurrentTimeline,
+  MediaSelectionReason,
+  MediaSnapshot,
+} from '@/lib/media-types'
 import { getSettings, listenToSettingsChanges, type SettingsPayload } from '@/lib/settings-api'
+import { markStartupMilestone } from '@/lib/startup-performance'
 import { TauriListenerScope } from '@/lib/tauri-listener-scope'
 
 const selectionReasonLabels: Record<MediaSelectionReason, string> = {
@@ -66,6 +73,7 @@ export const useBarStore = defineStore('bar', () => {
   /** 应用 Rust 推送的统一媒体快照，并同步无会话提示。 */
   function applySnapshot(nextSnapshot: MediaSnapshot | null): void {
     snapshotRevision += 1
+    if (nextSnapshot) markStartupMilestone('first-media-snapshot')
     reportMediaAvailability(nextSnapshot !== null && nextSnapshot.playbackStatus !== 'closed')
     const currentSnapshot = snapshot.value
     const trackChanged = hasTrackChanged(currentSnapshot, nextSnapshot)
@@ -103,6 +111,18 @@ export const useBarStore = defineStore('bar', () => {
       timelineResetAtUnixMs = null
     }
     snapshot.value = { ...snapshot.value, timeline }
+  }
+
+  /** 合并轻量播放状态；会话不匹配时等待下一份完整快照。 */
+  function applyPlaybackState(state: CurrentPlaybackState): void {
+    if (!snapshot.value || snapshot.value.sessionKey !== state.sessionKey) return
+    snapshotRevision += 1
+    reportMediaAvailability(state.playbackStatus !== 'closed')
+    snapshot.value = {
+      ...snapshot.value,
+      playbackStatus: state.playbackStatus,
+      capabilities: state.capabilities,
+    }
   }
 
   /** 应用设置页和 Rust 广播的完整设置。 */
@@ -143,6 +163,10 @@ export const useBarStore = defineStore('bar', () => {
           listenToCurrentMediaSnapshotChanges(applySnapshot),
         ),
         listenerScope.register(lifecycleRevision, listenToCurrentTimelineChanges(applyTimeline)),
+        listenerScope.register(
+          lifecycleRevision,
+          listenToCurrentPlaybackStateChanges(applyPlaybackState),
+        ),
       ])
       const currentSnapshot = await getCurrentMediaSnapshot()
       if (listenerScope.isCurrent(lifecycleRevision) && snapshotRevision === initialRevision)
@@ -185,12 +209,13 @@ export const useBarStore = defineStore('bar', () => {
   async function start(): Promise<void> {
     if (listenerScope.isActive) return
     const lifecycleRevision = listenerScope.activate()
-    // 冷启动时先选择并绑定实际媒体会话，再读取初始快照，避免暂时为空的缓存触发隐藏。
-    await startSelectionListener(lifecycleRevision)
+    // 媒体选择必须先于首次快照；设置监听与它没有依赖，可以同时初始化。
     await Promise.all([
-      startSnapshotListener(lifecycleRevision),
+      startSelectionListener(lifecycleRevision),
       startSettingsListener(lifecycleRevision),
     ])
+    await startSnapshotListener(lifecycleRevision)
+    if (listenerScope.isCurrent(lifecycleRevision)) markStartupMilestone('listeners-ready')
   }
 
   /** 销毁 Bar 页面建立的全部监听器。 */

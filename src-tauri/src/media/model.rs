@@ -113,6 +113,15 @@ pub(crate) struct CurrentPlaybackCapabilities {
     pub(crate) can_seek: bool,
 }
 
+/// 播放状态变化使用的轻量事件，不重复携带标题、歌手或封面。
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CurrentPlaybackState {
+    pub(crate) session_key: u64,
+    pub(crate) playback_status: CurrentPlaybackStatus,
+    pub(crate) capabilities: CurrentPlaybackCapabilities,
+}
+
 /// Windows 当前媒体会话上报的有效时间轴快照。
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]

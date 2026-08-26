@@ -304,6 +304,8 @@ fn synchronize_lyrics_taskbar_layout(
         target_width: positioning_span.width(),
         animation_revision,
         latest_animation_revision,
+        // Explorer 恢复属于故障恢复路径，不播放装饰性宽度动画。
+        reduce_motion: true,
     })?;
     *previous_layout = Some(current_layout);
     *pending_layout = None;
@@ -404,6 +406,7 @@ fn recover_bar_once(app: &AppHandle) -> Result<(), String> {
                 let _ = bar_window.destroy();
                 format!("无法在 Bar 宿主内创建 Child WebView：{error}")
             })?;
+        crate::startup_metrics::mark_bar_webview_created();
 
         // 宽度动画只调整原生宿主，由 Tauri 按父窗口客户区同步 Child WebView，
         // 避免两个独立的尺寸消息队列产生短暂空隙或错误的自动缩放比例。

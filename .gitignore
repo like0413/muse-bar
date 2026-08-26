@@ -14,8 +14,6 @@ dist-ssr
 *.local
 
 # Editor directories and files
-.vscode/*
-!.vscode/extensions.json
 .idea
 *.suo
 *.ntvs*
@@ -38,5 +36,3 @@ dist-ssr
 .env.*
 
 .trae/
-docs/*
-!docs/Muse Bar 全面优化路线图.md

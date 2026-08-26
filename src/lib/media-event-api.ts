@@ -2,6 +2,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 import type {
   CurrentTimeline,
+  CurrentPlaybackState,
   MediaSessionActivity,
   MediaSessionIdentity,
   MediaSnapshot,
@@ -10,6 +11,7 @@ import type {
 const MEDIA_SESSION_IDENTITIES_CHANGED_EVENT = 'media-session-identities-changed'
 const MEDIA_SESSION_ACTIVITIES_CHANGED_EVENT = 'media-session-activities-changed'
 const CURRENT_TIMELINE_CHANGED_EVENT = 'current-timeline-changed'
+const CURRENT_PLAYBACK_STATE_CHANGED_EVENT = 'current-playback-state-changed'
 const CURRENT_MEDIA_SNAPSHOT_CHANGED_EVENT = 'current-media-snapshot-changed'
 
 /** 订阅媒体会话身份变化，并返回用于取消订阅的函数。 */
@@ -36,6 +38,15 @@ export function listenToCurrentTimelineChanges(
 ): Promise<UnlistenFn> {
   return listen<CurrentTimeline | null>(CURRENT_TIMELINE_CHANGED_EVENT, (event) => {
     handleTimeline(event.payload)
+  })
+}
+
+/** 订阅不包含封面的轻量播放状态变化。 */
+export function listenToCurrentPlaybackStateChanges(
+  handlePlaybackState: (state: CurrentPlaybackState) => void,
+): Promise<UnlistenFn> {
+  return listen<CurrentPlaybackState>(CURRENT_PLAYBACK_STATE_CHANGED_EVENT, (event) => {
+    handlePlaybackState(event.payload)
   })
 }
 

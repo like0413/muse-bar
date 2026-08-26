@@ -56,6 +56,7 @@ pub(crate) struct WindowWidthAnimationRequest<'a, R: Runtime> {
     pub(crate) target_width: i32,
     pub(crate) animation_revision: u64,
     pub(crate) latest_animation_revision: Arc<AtomicU64>,
+    pub(crate) reduce_motion: bool,
 }
 
 /// 判断 Tauri 保存的 Bar 句柄是否仍对应当前进程中的有效窗口。
@@ -151,6 +152,7 @@ pub(crate) fn animate_window_width<R: Runtime>(
         target_width,
         animation_revision,
         latest_animation_revision,
+        reduce_motion,
     } = request;
 
     if target_width <= 0 {
@@ -211,7 +213,7 @@ pub(crate) fn animate_window_width<R: Runtime>(
     let position_distance = target_client_position.x.abs_diff(client_position.x);
     let large_reposition_threshold = u32::try_from(taskbar_rect.width() / 3).unwrap_or_default();
     let is_large_reposition = position_distance > large_reposition_threshold;
-    let is_instant_change = is_expanding || is_large_reposition;
+    let is_instant_change = reduce_motion || is_expanding || is_large_reposition;
     let animation_steps = if is_instant_change {
         1
     } else {

@@ -4,6 +4,7 @@ import { shallowRef } from 'vue'
 import { getMediaSessionActivities, getMediaSessionIdentities } from '@/lib/media-diagnostics-api'
 import {
   listenToCurrentMediaSnapshotChanges,
+  listenToCurrentPlaybackStateChanges,
   listenToCurrentTimelineChanges,
   listenToMediaSessionActivityChanges,
   listenToMediaSessionIdentityChanges,
@@ -183,6 +184,19 @@ export const useSettingsStore = defineStore('settings', () => {
           mediaSnapshotRevision += 1
           mediaSnapshot.value = snapshot
           mediaSnapshotError.value = ''
+        }),
+      )
+      await listenerScope.register(
+        lifecycleRevision,
+        listenToCurrentPlaybackStateChanges((state) => {
+          if (!listenerScope.isCurrent(lifecycleRevision)) return
+          if (!mediaSnapshot.value || mediaSnapshot.value.sessionKey !== state.sessionKey) return
+          mediaSnapshotRevision += 1
+          mediaSnapshot.value = {
+            ...mediaSnapshot.value,
+            playbackStatus: state.playbackStatus,
+            capabilities: state.capabilities,
+          }
         }),
       )
       await listenerScope.register(

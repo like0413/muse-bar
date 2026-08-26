@@ -970,9 +970,11 @@ DOM 测量副作用；异步 DOM 刷新使用 revision 失效；模板没有排�
 
 # 十二、性能优化
 
+状态：`Confirmed`，已完成。
+
 ## 59. 启动流程
 
-建立时间点：
+已建立低开销、一次性的启动时间点：
 
 ```
 Process start
@@ -984,91 +986,92 @@ First media snapshot
 Bar interactive
 ```
 
-检查哪些初始化可以：
+Rust 记录 `Tauri setup complete` 和 `Bar WebView created`；前端使用 `performance.mark` 记录
+`vue-mounted`、`listeners-ready`、`first-media-snapshot` 和 `bar-interactive`。完整说明与体积数据见
+`docs/performance-baseline.md`。
 
-- 延迟到首次使用。
-- 移到后台线程。
-- 并行执行。
-- 从缓存恢复。
-- 等首屏后再执行。
+Bar 启动时媒体选择仍先于首次快照，避免错误会话短暂显示；与媒体选择无依赖的设置监听改为并行。
+设置页各诊断数据继续并行读取，重型 WinRT、图片解码和 UI Automation 已在后台线程。
 
 ## 60. Bar 首屏
 
-优先目标不是所有后台服务完成，而是：
+状态：`Confirmed`。
 
-- 窗口尽快出现或明确保持隐藏。
-- 基础布局可用。
-- 媒体状态随后更新。
-- 设置和诊断初始化不阻塞 Bar。
+- Bar 原生 Child 在 Explorer 恢复线程中创建并按媒体可用状态决定显示，不等待设置诊断页。
+- Vue 挂载后先注册媒体监听，随后读取首次快照；状态到达前显示明确的读取/空状态。
+- Settings 的运行信息、任务栏诊断和媒体诊断属于独立窗口，不进入 Bar 启动依赖图。
+- 启动日志只记录一次，不在 Explorer 后续恢复时制造重复性能样本。
 
 ## 61. DOM 测量
 
-检查 Bar 的：
+状态：`Confirmed`，本轮补强异步结果失效。
 
-- `Range.getBoundingClientRect`
-- artwork/controls 宽度读取
-- requestAnimationFrame
-- retry timer
-
-保证同一帧先集中读取，再集中写入，避免 layout thrashing。
+- `ResizeObserver` 和 watcher 只调用 `scheduleMeasurement`，同一帧由单个 animation frame 合并。
+- `measureNaturalWidth` 集中读取 Range、封面、控制按钮、gap 和 insets；完成所有读取后才调用 IPC。
+- 相同宽度在 0.5 px 内不重复上报。
+- 每次上报具有 revision；旧 IPC 返回、卸载后的返回和旧 retry 不再修改诊断文本或启动新测量。
+- 字体就绪、animation frame、retry timer 和 observer 均在卸载路径受控。
 
 ## 62. 动画
 
-检查：
+状态：`Confirmed`。
 
-- 宽度动画是否可以取消。
-- 新动画是否彻底终止旧动画。
-- Explorer 重启期间是否继续提交动画。
-- `prefers-reduced-motion`。
-- 不使用高频 IPC 驱动每一帧。
+- Rust 宽度动画使用 `animation_revision`，每帧提交前验证最新 revision；新动画使旧动画自然终止。
+- 每帧移动完全在 Rust/主线程调度中完成，前端只为一次目标宽度调用一次 IPC。
+- HWND 有效性和父任务栏身份每帧验证，Explorer 重启后的旧帧不会写入新窗口。
+- 前端把 `prefers-reduced-motion` 传入宽度命令；减少动态时只提交最终帧，内容切换和标题滚动也
+  同步停用装饰动画。
+- Explorer 恢复路径始终使用即时宽度，不播放恢复动画。
 
 ## 63. Bundle
 
-当前主要输出：
+状态：`Confirmed`，已建立产物表和预算。
 
-- Settings：207.11 kB
-- Bar：139.64 kB
-- Settings API 共享块：118.68 kB
-- 全局 CSS：98.38 kB
-
-后续需要：
-
-- 生成 bundle 可视化。
-- 确认 Reka UI、Motion、图标和 i18n 的占比。
-- 检查 Settings 是否导入不需要的组件。
-- 建立 chunk 大小预算。
-- 检查 Tailwind 是否扫描整个 UI 组件目录导致 CSS 膨胀。
+- Settings 首屏只同步加载默认 Taskbar 分区，Appearance、Media、General 和 Diagnostics 使用动态
+  import；主 chunk 从 210.34 kB 降至 126.43 kB，约减少 40%。
+- 四个按需分区分别形成 1.22–13.27 kB chunk；Settings API 共享块降至 94.97 kB。
+- Bar 为 140.76 kB，Motion 仅由 Bar 使用；Reka 控件按 Settings 分区进入共享或动态 chunk。
+- Vite 单 chunk 警告预算设为 250 kB，显著低于默认 500 kB。
+- 全局 CSS 为 98.55 kB、gzip 15.70 kB。Tailwind 会扫描源码 UI 目录，但当前压缩体积可接受；不建立
+  容易遗漏新增组件样式的手工扫描白名单。
 
 ## 64. 封面数据
 
-当前封面以 base64 data URL 进入 WebView，需要评估：
+状态：`Confirmed / Keep`，完成高收益改造。
 
-- 最大封面大小。
-- 编码带来的约 33% 体积增长。
-- 快速切歌时旧封面驻留。
-- 相同封面是否重复解码和传输。
-- 是否需要有限大小的缓存。
-- 是否值得使用 Tauri asset protocol 或 binary channel。
-
-必须测量后再决定，不立即重写。
+- 原始封面硬限制 4 MiB，解码限制 4096×4096 和 64 MiB；base64 最坏约增加三分之一体积。
+- 新增 `current-playback-state-changed` 轻量事件，播放/暂停和能力变化不再重复发送完整封面。
+- 时间轴保持独立轻量事件；只有元数据变化和主动首次查询携带完整快照。
+- loader 只保留最近元数据并用 revision 丢弃旧切歌结果，前端 `shallowRef` 替换根引用后旧封面可回收。
+- 当前没有跨多首歌曲复用封面的证据，不增加 LRU、asset protocol 或 binary channel。
 
 ## 65. Rust Binary Size
 
-已有良好 release 配置：
+状态：`Confirmed`，已完成 feature 与体积审计。
 
-- LTO
-- 单 codegen unit
-- `opt-level = "s"`
-- strip
-- panic abort
+- Release 保留 LTO、单 codegen unit、`opt-level = "s"`、strip 和 panic abort。
+- Tauri `unstable` 经实际移除编译验证后确认必须保留：Child WebView API 依赖它。
+- Windows features 均由当前 WinRT、DWM、GDI、COM、线程、DPI、UI Automation 或窗口代码使用。
+- 图片主色保留 JPEG/PNG/WebP 解码器；少见的 BMP/GIF 继续由 WebView 展示，Rust 解码失败时回退系统色。
+- JPEG/PNG-only 配置的 Release EXE 曾测得 3,725,312 bytes；恢复 WebP 后不沿用该体积结论，留待下次 Release 构建重新测量。
+- tray、autostart、single-instance 都是现有产品能力，不为体积删除。
+- `tauri build` 两次在下载 NSIS 3.11 时发生网络全局超时；发布 EXE 已生成，安装包体积暂缺。
 
-继续检查：
+## 第十二章验收
 
-- Tauri `unstable` feature 是否必要。
-- Windows crate features 是否都实际使用。
-- image codecs 是否全部需要。
-- tray、autostart、single-instance 插件成本。
-- 安装包与二进制大小基线。
+2026-08-26 已完成：
+
+- `vp check`：375 个文件格式正确，337 个文件无 lint 或类型错误。
+- `cargo fmt --check`、`cargo check --locked`：通过。
+- 严格 Clippy 与 `clippy::perf`：通过。
+- `vp build`：通过；Settings 主 chunk 126.43 kB，Bar 140.76 kB，均低于 250 kB 预算。
+- `cargo build --release`：JPEG/PNG-only 配置曾通过；之后已恢复 WebP，当前发布体积待重新测量。
+- `vp exec tauri dev`：正常启动，开发样本中 Tauri setup 为 +32.2 ms，Bar WebView 创建为
+  +442.8 ms；第二实例退出码 0，运行期间没有新增 Rust 错误日志。
+- 验收后已关闭本轮 Muse Bar、Cargo 和 Vite+ 服务，端口 1420 空闲。
+- `tauri build` 的应用编译和发布 EXE 生成成功，但 NSIS 3.11 下载连续两次网络超时，未生成安装包。
+
+本章未新增或运行自动化测试代码。
 
 ---
 

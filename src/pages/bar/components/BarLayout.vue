@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { usePreferredReducedMotion } from '@vueuse/core'
 import { AnimatePresence, motion } from 'motion-v'
 import { storeToRefs } from 'pinia'
 import {
@@ -13,6 +14,7 @@ import {
 
 import { reportBarContentWidth } from '@/lib/bar-layout-api'
 import { readElementAlignment, readLyricsEnabled, readShowControls } from '@/lib/settings-api'
+import { markStartupMilestone } from '@/lib/startup-performance'
 import { cn } from '@/lib/utils'
 
 import { useBarStore } from '../bar-store'
@@ -27,6 +29,7 @@ const emit = defineEmits<{
 }>()
 
 const barStore = useBarStore()
+const preferredReducedMotion = usePreferredReducedMotion()
 const { settings, snapshot } = storeToRefs(barStore)
 const isHovered = shallowRef(false)
 const lyricsEnabled = computed(() => readLyricsEnabled(settings.value))
@@ -45,12 +48,17 @@ const barSurfaceElement = useTemplateRef<HTMLElement>('barSurface')
 const contentInitial = { opacity: 0, y: 2 }
 const contentVisible = { opacity: 1, y: 0 }
 const contentExit = { opacity: 0, y: -2 }
-const contentTransition = { duration: 0.18, ease: [0.22, 1, 0.36, 1] as const }
+const contentTransition = computed(() =>
+  preferredReducedMotion.value === 'reduce'
+    ? { duration: 0 }
+    : { duration: 0.18, ease: [0.22, 1, 0.36, 1] as const },
+)
 let resizeObserver: ResizeObserver | undefined
 let measurementFrame: number | undefined
 let measurementRetryTimer: number | undefined
 let lastReportedNaturalWidth = 0
 let hasUnmounted = false
+let measurementRevision = 0
 
 /** 将 getComputedStyle 返回的像素文本安全转换为数值。 */
 function readCssPixels(value: string): number {
@@ -118,13 +126,16 @@ function scheduleMeasurement(): void {
     }
 
     lastReportedNaturalWidth = naturalWidth
-    void reportBarContentWidth(naturalWidth)
+    const revision = ++measurementRevision
+    void reportBarContentWidth(naturalWidth, preferredReducedMotion.value === 'reduce')
       .then((measurement) => {
+        if (hasUnmounted || revision !== measurementRevision) return
         const details =
           measurement.mode === 'availableArea'
             ? `宽度：歌词可用区域 ${measurement.targetWidth}`
             : `宽度：自然 ${measurement.naturalWidth.toFixed(1)}，目标 ${measurement.targetWidth}，上限 ${measurement.maximumWidth}`
         barStore.setBarWidthDetails(details)
+        if (measurement.applied) markStartupMilestone('bar-interactive')
         if (!measurement.applied) {
           // 切换目标显示器时原生 Child 需要先重新挂载，稍后再应用同一次宽度策略。
           lastReportedNaturalWidth = 0
@@ -136,6 +147,7 @@ function scheduleMeasurement(): void {
         }
       })
       .catch((error: unknown) => {
+        if (hasUnmounted || revision !== measurementRevision) return
         barStore.setBarWidthDetails(
           `宽度测量上报失败：${error instanceof Error ? error.message : String(error)}`,
         )
@@ -170,6 +182,7 @@ watch(settings, async () => {
 onMounted(startMeasurement)
 onBeforeUnmount(() => {
   hasUnmounted = true
+  measurementRevision += 1
   resizeObserver?.disconnect()
   if (measurementFrame !== undefined) window.cancelAnimationFrame(measurementFrame)
   if (measurementRetryTimer !== undefined) window.clearTimeout(measurementRetryTimer)

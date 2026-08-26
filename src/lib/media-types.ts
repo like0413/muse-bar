@@ -82,6 +82,12 @@ export interface CurrentPlaybackCapabilities {
   canSeek: boolean
 }
 
+export interface CurrentPlaybackState {
+  sessionKey: number
+  playbackStatus: CurrentPlaybackStatus
+  capabilities: CurrentPlaybackCapabilities
+}
+
 export interface CurrentTimeline {
   startMs: number
   endMs: number

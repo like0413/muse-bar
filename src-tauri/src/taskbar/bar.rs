@@ -9,6 +9,7 @@ pub(crate) fn apply_content_width(
     app: &AppHandle,
     state: &AppState,
     natural_width: f64,
+    reduce_motion: bool,
 ) -> Result<BarWidthMeasurement, String> {
     let bar_window = app
         .get_window("bar")
@@ -66,6 +67,7 @@ pub(crate) fn apply_content_width(
         target_width: target_physical_width,
         animation_revision,
         latest_animation_revision,
+        reduce_motion,
     })?;
 
     Ok(measurement)

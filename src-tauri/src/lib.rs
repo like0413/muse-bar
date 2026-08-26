@@ -24,11 +24,15 @@ mod settings;
 /// 应用级共享状态及其只读访问接口。
 mod state;
 
+/// 进程启动关键路径的低开销一次性里程碑。
+mod startup_metrics;
+
 /// Windows 任务栏发现、占用布局、Child 宿主与 Explorer 恢复。
 mod taskbar;
 
 /// 配置插件并启动整个应用共享的 Tauri 运行时。
 pub fn run() {
+    startup_metrics::begin();
     let app = tauri::Builder::default()
         // 单实例插件必须最先注册，确保第二个进程不会先创建托盘或后台监听器。
         .plugin(tauri_plugin_single_instance::init(
@@ -68,6 +72,8 @@ pub fn run() {
 
             let explorer_monitor = taskbar::start_explorer_monitor(app.handle().clone())?;
             app.manage(explorer_monitor);
+
+            startup_metrics::mark_setup_complete();
 
             Ok(())
         })

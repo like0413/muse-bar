@@ -22,6 +22,8 @@ serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2"
 log = "0.4"
+# 真正的任务栏 Child WebView 需要 WindowBuilder、WebviewBuilder 和 add_child，
+# 这些多 WebView API 在 Tauri 2.11 仍由 unstable feature 暴露。
 tauri = { version = "2.11.3", features = ["unstable", "tray-icon"] }
 tauri-plugin-log = "2"
 tauri-plugin-autostart = "2.5.1"
@@ -29,13 +31,7 @@ tauri-plugin-single-instance = "2.4.3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 base64 = "0.22"
-image = { version = "=0.25.5", default-features = false, features = [
-  "bmp",
-  "gif",
-  "jpeg",
-  "png",
-  "webp",
-] }
+image = { version = "=0.25.5", default-features = false, features = ["jpeg", "png", "webp"] }
 windows = { version = "=0.61.3", features = [
   "Media_Control",
   "Storage_Streams",

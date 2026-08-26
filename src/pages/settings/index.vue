@@ -1,17 +1,20 @@
 <script setup lang="ts">
 import { AlertCircleIcon } from '@lucide/vue'
 import { storeToRefs } from 'pinia'
-import { computed, nextTick, onBeforeUnmount, onMounted, shallowRef } from 'vue'
+import {
+  computed,
+  defineAsyncComponent,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  shallowRef,
+} from 'vue'
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { waitForColorModeReady } from '@/lib/color-mode'
 import { showReadySettingsWindow } from '@/lib/settings-window'
 
-import AppearanceSettingsSection from './components/AppearanceSettingsSection.vue'
-import DiagnosticsSettingsSection from './components/DiagnosticsSettingsSection.vue'
-import GeneralSettingsSection from './components/GeneralSettingsSection.vue'
-import MediaSettingsSection from './components/MediaSettingsSection.vue'
 import SettingsHeader from './components/SettingsHeader.vue'
 import SettingsSidebar from './components/SettingsSidebar.vue'
 import TaskbarSettingsSection from './components/TaskbarSettingsSection.vue'
@@ -23,16 +26,15 @@ const settingsStore = useSettingsStore()
 const { settingsError, isSavingSettings } = storeToRefs(settingsStore)
 let hasUnmounted = false
 
-const activeSectionComponent = computed(() => {
-  const components = {
-    taskbar: TaskbarSettingsSection,
-    appearance: AppearanceSettingsSection,
-    media: MediaSettingsSection,
-    general: GeneralSettingsSection,
-    diagnostics: DiagnosticsSettingsSection,
-  } as const
-  return components[activeSection.value]
-})
+const sectionComponents = {
+  taskbar: TaskbarSettingsSection,
+  appearance: defineAsyncComponent(() => import('./components/AppearanceSettingsSection.vue')),
+  media: defineAsyncComponent(() => import('./components/MediaSettingsSection.vue')),
+  general: defineAsyncComponent(() => import('./components/GeneralSettingsSection.vue')),
+  diagnostics: defineAsyncComponent(() => import('./components/DiagnosticsSettingsSection.vue')),
+} as const
+
+const activeSectionComponent = computed(() => sectionComponents[activeSection.value])
 
 /** 等待浏览器至少绘制一次，同时避免隐藏窗口中动画帧暂停造成永久等待。 */
 function waitForInitialPaint(): Promise<void> {

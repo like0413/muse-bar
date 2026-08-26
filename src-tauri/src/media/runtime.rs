@@ -15,8 +15,8 @@ use super::{
     control::{execute_control_action, ControlAction, MediaControlError},
     model::{
         bounded_media_text, identify_media_player, CurrentMediaMetadata,
-        CurrentPlaybackCapabilities, CurrentPlaybackStatus, CurrentTimeline, MediaSessionIdentity,
-        MediaSnapshot,
+        CurrentPlaybackCapabilities, CurrentPlaybackState, CurrentPlaybackStatus, CurrentTimeline,
+        MediaSessionIdentity, MediaSnapshot,
     },
 };
 use tauri::{AppHandle, Emitter, Runtime};
@@ -34,6 +34,7 @@ const TICKS_PER_MILLISECOND: i64 = 10_000;
 const WINDOWS_TO_UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
 const MEDIA_SESSION_IDENTITIES_CHANGED_EVENT: &str = "media-session-identities-changed";
 const CURRENT_TIMELINE_CHANGED_EVENT: &str = "current-timeline-changed";
+const CURRENT_PLAYBACK_STATE_CHANGED_EVENT: &str = "current-playback-state-changed";
 const CURRENT_MEDIA_SNAPSHOT_CHANGED_EVENT: &str = "current-media-snapshot-changed";
 const MEDIA_RUNTIME_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -714,7 +715,6 @@ fn bind_media_session<R: Runtime>(
         .map_err(|error| format!("无法订阅当前媒体会话元数据变化：{error}"))?;
 
     let playback_app = app.clone();
-    let playback_metadata_loader = Arc::clone(media_metadata_loader);
     let playback_handler: TypedEventHandler<
         GlobalSystemMediaTransportControlsSession,
         PlaybackInfoChangedEventArgs,
@@ -726,7 +726,7 @@ fn bind_media_session<R: Runtime>(
             };
 
             emit_timeline(session, &playback_app);
-            emit_media_snapshot_from_cache(session, &playback_app, &playback_metadata_loader);
+            emit_playback_state(session, &playback_app);
             Ok(())
         },
     );
@@ -837,25 +837,29 @@ fn emit_media_snapshot<R: Runtime>(
     }
 }
 
-/// 从后台元数据缓存构建统一快照，缓存仍属于旧会话时跳过本次广播。
-fn emit_media_snapshot_from_cache<R: Runtime>(
+/// 广播不含封面的轻量播放状态，避免播放/暂停时重复传输完整媒体快照。
+fn emit_playback_state<R: Runtime>(
     session: &GlobalSystemMediaTransportControlsSession,
     app: &AppHandle<R>,
-    media_metadata_loader: &MediaMetadataLoader,
 ) {
-    let metadata = match media_metadata_loader.cached() {
-        Ok(Some(metadata)) => metadata,
-        Ok(None) => return,
-        Err(error) => {
-            log::warn!("无法读取媒体元数据缓存以组装快照：{error}");
-            return;
-        }
-    };
+    let state = (|| {
+        let playback_info = session
+            .GetPlaybackInfo()
+            .map_err(|error| format!("无法读取播放状态事件：{error}"))?;
+        Ok::<_, String>(CurrentPlaybackState {
+            session_key: session_key(session),
+            playback_status: playback_status_from_info(&playback_info)?,
+            capabilities: playback_capabilities_from_info(&playback_info)?,
+        })
+    })();
 
-    match metadata_belongs_to_session(&metadata, session) {
-        Ok(true) => emit_media_snapshot(session, app, metadata),
-        Ok(false) => {}
-        Err(error) => log::warn!("无法确认媒体快照所属会话：{error}"),
+    match state {
+        Ok(state) => {
+            if let Err(error) = app.emit(CURRENT_PLAYBACK_STATE_CHANGED_EVENT, state) {
+                log::warn!("无法广播当前播放状态：{error}");
+            }
+        }
+        Err(error) => log::warn!("无法组装当前播放状态事件：{error}"),
     }
 }
 

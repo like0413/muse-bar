@@ -61,14 +61,15 @@ Vue Store <- Tauri 事件 <- 归一化状态 <- Windows 回调
 ```text
 Windows 会话发生变化
   -> Rust 读取并归一化状态
-  -> 更新 AppState 中的唯一快照
-  -> 向 bar 窗口发送 media-changed
-  -> Pinia 替换最新 MediaSnapshot
+  -> 元数据变化发送 current-media-snapshot-changed 完整快照
+  -> 播放或时间轴变化发送不含封面的轻量事件
+  -> Pinia 按 sessionKey 替换快照或合并轻量字段
   -> Vue 自动重新渲染
 ```
 
-事件载荷使用完整快照而不是零散字段，前端不会短暂组合出“新标题 + 旧封面”的
-不一致状态。
+标题、歌手和封面必须通过完整快照原子更新，前端不会短暂组合出“新标题 + 旧封面”。
+播放状态/能力和时间轴携带 `sessionKey` 或只合并到当前会话，避免播放/暂停和进度变化重复传输
+base64 封面。
 
 ## 四个核心数据类型
 
