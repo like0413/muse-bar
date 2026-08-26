@@ -15,9 +15,12 @@
     "allow-get-taskbar-identity",
     "allow-get-taskbar-monitors",
     "allow-get-taskbar-occupied-regions",
+    "allow-get-update-status",
     "allow-get-windows-version",
+    "allow-install-update",
     "allow-open-log-directory",
     "allow-show-ready-settings-window",
-    "allow-update-settings"
+    "allow-update-settings",
+    "allow-check-for-update"
   ]
 }

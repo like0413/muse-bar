@@ -12,7 +12,9 @@ fn main() {
             "get_taskbar_identity",
             "get_taskbar_monitors",
             "get_taskbar_occupied_regions",
+            "get_update_status",
             "get_windows_version",
+            "install_update",
             "open_log_directory",
             "open_settings_window",
             "refresh_selected_media_session",
@@ -20,6 +22,7 @@ fn main() {
             "set_bar_media_available",
             "show_ready_settings_window",
             "update_settings",
+            "check_for_update",
         ]),
     ))
     .expect("error while building Tauri application resources")

@@ -27,6 +27,9 @@ mod state;
 /// Windows 任务栏发现、占用布局、Child 宿主与 Explorer 恢复。
 mod taskbar;
 
+/// GitHub Release 更新检查、下载与安装状态。
+mod updater;
+
 /// 配置插件并启动整个应用共享的 Tauri 运行时。
 pub fn run() {
     let app = tauri::Builder::default()
@@ -43,10 +46,13 @@ pub fn run() {
                 .app_name("Muse Bar")
                 .build(),
         )
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let settings = settings::AppSettings::load(app.handle())?;
             let launch_on_startup = settings.launch_on_startup;
-            app.manage(state::AppState::new(env!("CARGO_PKG_VERSION"), settings));
+            let application_version = app.package_info().version.to_string();
+            app.manage(state::AppState::new(application_version.clone(), settings));
+            app.manage(updater::UpdateManager::new(application_version));
 
             #[cfg(debug_assertions)]
             {
@@ -69,6 +75,8 @@ pub fn run() {
             let explorer_monitor = taskbar::start_explorer_monitor(app.handle().clone())?;
             app.manage(explorer_monitor);
 
+            updater::start_automatic_check(app.handle().clone());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -87,6 +95,9 @@ pub fn run() {
             commands::media::get_media_session_activities,
             commands::media::refresh_selected_media_session,
             commands::runtime::get_runtime_info,
+            commands::updater::get_update_status,
+            commands::updater::check_for_update,
+            commands::updater::install_update,
             commands::settings::get_settings,
             commands::settings::update_settings,
             commands::taskbar::get_taskbar_monitors

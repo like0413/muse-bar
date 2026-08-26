@@ -18,11 +18,14 @@ import { showReadySettingsWindow } from '@/lib/settings-window'
 import SettingsHeader from './components/SettingsHeader.vue'
 import SettingsSidebar from './components/SettingsSidebar.vue'
 import TaskbarSettingsSection from './components/TaskbarSettingsSection.vue'
+import UpdateAvailableAlert from './components/UpdateAvailableAlert.vue'
 import { getSettingsNavigationItem, type SettingsSection } from './settings-navigation'
 import { useSettingsStore } from './settings-store'
+import { useUpdateStore } from './update-store'
 
 const activeSection = shallowRef<SettingsSection>('taskbar')
 const settingsStore = useSettingsStore()
+const updateStore = useUpdateStore()
 const { settingsError, isSavingSettings } = storeToRefs(settingsStore)
 let hasUnmounted = false
 
@@ -53,7 +56,7 @@ function waitForInitialPaint(): Promise<void> {
 
 /** 数据、主题和首屏内容全部准备好后再显示原生设置窗口。 */
 async function initializeSettingsPage(): Promise<void> {
-  await Promise.all([settingsStore.start(), waitForColorModeReady()])
+  await Promise.all([settingsStore.start(), updateStore.start(), waitForColorModeReady()])
   if (hasUnmounted) return
 
   await nextTick()
@@ -71,6 +74,7 @@ onMounted(() => void initializeSettingsPage())
 onBeforeUnmount(() => {
   hasUnmounted = true
   settingsStore.stop()
+  updateStore.stop()
 })
 </script>
 
@@ -91,6 +95,8 @@ onBeforeUnmount(() => {
           </div>
 
           <p v-if="isSavingSettings" class="sr-only" aria-live="polite">正在保存设置</p>
+
+          <UpdateAvailableAlert />
 
           <Alert v-if="settingsError" variant="destructive">
             <AlertCircleIcon />

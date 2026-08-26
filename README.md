@@ -52,6 +52,34 @@ vp exec tauri build
 
 当前发布目标是无需管理员权限的当前用户 NSIS 安装包。
 
+## 发布与自动更新
+
+应用使用 GitHub Releases 和 Tauri 签名全量更新。首次发布前只需完成一次签名配置：
+
+1. 在仓库外生成带密码的更新密钥：
+
+   ```powershell
+   vp exec tauri signer generate -w C:\安全目录\muse-bar.key
+   ```
+
+2. 将生成的公钥完整内容替换到 `src-tauri/tauri.conf.json` 的
+   `plugins.updater.pubkey`；私钥不得提交。
+3. 在 GitHub 仓库 Actions Secrets 中保存私钥内容和密码，名称分别为
+   `TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。
+
+发布时只修改 `src-tauri/tauri.conf.json` 的应用版本并提交，然后推送相同版本标签：
+
+```powershell
+git tag v0.2.0
+git push origin main
+git push origin v0.2.0
+```
+
+GitHub Actions 会先完成前端和 Rust 静态检查，再构建签名的 Windows NSIS 安装包；
+所有文件上传成功后才公开 Release。签名私钥必须长期备份，遗失后已安装的客户端无法信任新密钥发布的更新。
+
+发布工作流使用 Vite+ 统一安装 Node.js、pnpm 和前端依赖缓存，并单独缓存 Rust 构建依赖。NSIS 安装包设有 100 MiB 上限，实际大小会写入每次工作流摘要，避免依赖或资源异常膨胀后被直接发布。
+
 ## 文档
 
 - [架构、目录与数据流](docs/architecture.md)

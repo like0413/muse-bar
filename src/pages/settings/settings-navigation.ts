@@ -38,7 +38,7 @@ export const SETTINGS_NAVIGATION: ReadonlyArray<SettingsNavigationItem> = [
   {
     id: 'general',
     label: '常规',
-    description: '管理开机启动与后台运行行为。',
+    description: '管理开机启动、后台运行和软件更新。',
     icon: Settings2Icon,
   },
   {

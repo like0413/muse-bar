@@ -192,7 +192,7 @@ function formatStartedAt(startedAtUnixMs: number): string {
       </CardHeader>
       <CardContent class="text-muted-foreground flex flex-col gap-2 text-sm">
         <p>当前版本聚焦 Child 真嵌入和 Windows SMTC 媒体会话。</p>
-        <p>真实歌词、Owner 回退、多屏同步和自动更新仍属于后续范围。</p>
+        <p>当前版本支持通过 GitHub Releases 检查并安装签名更新。</p>
       </CardContent>
     </Card>
   </div>

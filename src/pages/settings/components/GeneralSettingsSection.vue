@@ -2,7 +2,6 @@
 import { storeToRefs } from 'pinia'
 import { computed } from 'vue'
 
-import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Field,
@@ -15,6 +14,7 @@ import { Switch } from '@/components/ui/switch'
 import { readLaunchOnStartup } from '@/lib/settings-api'
 
 import { useSettingsStore } from '../settings-store'
+import UpdateSettingsCard from './UpdateSettingsCard.vue'
 
 const settingsStore = useSettingsStore()
 const { settings } = storeToRefs(settingsStore)
@@ -28,26 +28,30 @@ function handleLaunchOnStartupChange(enabled: boolean): void {
 </script>
 
 <template>
-  <Card>
-    <CardHeader>
-      <CardTitle>应用行为</CardTitle>
-      <CardDescription>控制 Muse Bar 的 Windows 启动和后台运行行为。</CardDescription>
-    </CardHeader>
-    <CardContent>
-      <FieldGroup>
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldTitle>开机启动</FieldTitle>
-            <FieldDescription>使用 Windows 当前用户启动项，不需要管理员权限。</FieldDescription>
-          </FieldContent>
-          <Switch
-            :model-value="launchOnStartup"
-            :disabled="!settings"
-            aria-label="开机启动"
-            @update:model-value="handleLaunchOnStartupChange"
-          />
-        </Field>
-      </FieldGroup>
-    </CardContent>
-  </Card>
+  <div class="flex flex-col gap-4">
+    <Card>
+      <CardHeader>
+        <CardTitle>应用行为</CardTitle>
+        <CardDescription>控制 Muse Bar 的 Windows 启动和后台运行行为。</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <FieldGroup>
+          <Field orientation="horizontal">
+            <FieldContent>
+              <FieldTitle>开机启动</FieldTitle>
+              <FieldDescription>使用 Windows 当前用户启动项，不需要管理员权限。</FieldDescription>
+            </FieldContent>
+            <Switch
+              :model-value="launchOnStartup"
+              :disabled="!settings"
+              aria-label="开机启动"
+              @update:model-value="handleLaunchOnStartupChange"
+            />
+          </Field>
+        </FieldGroup>
+      </CardContent>
+    </Card>
+
+    <UpdateSettingsCard />
+  </div>
 </template>
