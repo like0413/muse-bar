@@ -1,5 +1,4 @@
 use std::{
-    io::Cursor,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Condvar, Mutex,
@@ -13,11 +12,14 @@ use crate::{
     media_activity::{
         session_key, MediaActivityTracker, MediaSessionActivity, SelectedMediaSession,
     },
+    media_artwork::{read_artwork, read_windows_accent_color},
     media_control::{execute_control_action, ControlAction, MediaControlError},
-    platform::windows::{DwmGetColorizationColor, BOOL},
+    media_model::{
+        bounded_media_text, identify_media_player, CurrentMediaMetadata,
+        CurrentPlaybackCapabilities, CurrentPlaybackStatus, CurrentTimeline, MediaSessionIdentity,
+        MediaSnapshot,
+    },
 };
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime};
 use windows::Foundation::TypedEventHandler;
 use windows::Media::Control::{
@@ -27,7 +29,6 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionPlaybackStatus, MediaPropertiesChangedEventArgs,
     PlaybackInfoChangedEventArgs, SessionsChangedEventArgs, TimelinePropertiesChangedEventArgs,
 };
-use windows::Storage::Streams::{DataReader, IRandomAccessStreamReference};
 use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
 
 const TICKS_PER_MILLISECOND: i64 = 10_000;
@@ -35,116 +36,7 @@ const WINDOWS_TO_UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
 const MEDIA_SESSION_IDENTITIES_CHANGED_EVENT: &str = "media-session-identities-changed";
 const CURRENT_TIMELINE_CHANGED_EVENT: &str = "current-timeline-changed";
 const CURRENT_MEDIA_SNAPSHOT_CHANGED_EVENT: &str = "current-media-snapshot-changed";
-const MAX_ARTWORK_BYTES: u64 = 4 * 1024 * 1024;
-const MAX_ARTWORK_DIMENSION: u32 = 4096;
-const MAX_ARTWORK_DECODE_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_MEDIA_TEXT_CHARS: usize = 4096;
 const MEDIA_RUNTIME_RETRY_INTERVAL: Duration = Duration::from_secs(2);
-const DEFAULT_WINDOWS_ACCENT_COLOR: &str = "#0078D4";
-
-/// 当前 Windows 系统会话提供的媒体元数据；封面与文字始终属于同一份快照。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CurrentMediaMetadata {
-    source_app_id: String,
-    title: String,
-    artist: String,
-    artwork_data_url: Option<String>,
-    accent_color: String,
-}
-
-/// Muse Bar 用于会话选择和诊断的播放器类别。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub(crate) enum MediaPlayerKind {
-    #[serde(rename = "qqMusic")]
-    QqMusic,
-    #[serde(rename = "neteaseCloudMusic")]
-    NeteaseCloudMusic,
-    #[serde(rename = "kugouMusic")]
-    KugouMusic,
-    #[serde(rename = "qishuiMusic")]
-    QishuiMusic,
-    #[serde(rename = "other")]
-    Other,
-}
-
-/// 诊断页面使用的会话来源标识及其识别结果。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MediaSessionIdentity {
-    session_key: u64,
-    source_app_id: String,
-    player_kind: MediaPlayerKind,
-}
-
-/// 一次缩略图读取产生的前端图片和候选主色。
-struct MediaArtwork {
-    data_url: String,
-    accent_color: Option<String>,
-}
-
-/// 用于统计相近颜色出现次数及其实际 RGB 均值。
-#[derive(Clone, Copy, Default)]
-struct ColorBucket {
-    count: u32,
-    red_sum: u64,
-    green_sum: u64,
-    blue_sum: u64,
-}
-
-/// Windows 当前媒体会话的播放状态。
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum CurrentPlaybackStatus {
-    Closed,
-    Opened,
-    Changing,
-    Stopped,
-    Playing,
-    Paused,
-    Unknown,
-}
-
-/// Windows 当前媒体会话声明支持的控制能力。
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CurrentPlaybackCapabilities {
-    can_play: bool,
-    can_pause: bool,
-    can_previous: bool,
-    can_next: bool,
-    can_seek: bool,
-}
-
-/// Windows 当前媒体会话上报的有效时间轴快照。
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CurrentTimeline {
-    start_ms: i64,
-    end_ms: i64,
-    position_ms: i64,
-    min_seek_ms: i64,
-    max_seek_ms: i64,
-    last_updated_at_unix_ms: i64,
-    playback_rate: Option<f64>,
-}
-
-/// 前端消费的统一媒体快照，汇总当前会话的显示信息、状态、能力和时间轴。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MediaSnapshot {
-    session_key: u64,
-    source_app_id: String,
-    player_kind: MediaPlayerKind,
-    title: String,
-    artist: String,
-    artwork_data_url: Option<String>,
-    accent_color: String,
-    system_accent_color: String,
-    playback_status: CurrentPlaybackStatus,
-    capabilities: CurrentPlaybackCapabilities,
-    timeline: Option<CurrentTimeline>,
-}
 
 /// 保存当前会话以及注销其元数据事件所需的 token。
 #[derive(Default)]
@@ -1032,241 +924,6 @@ fn read_media_metadata(
     })
 }
 
-/// 限制播放器提供的标题和歌手长度，避免异常会话把大字符串长期留在活动与快照缓存。
-pub(crate) fn bounded_media_text(value: String) -> String {
-    if value.chars().count() <= MAX_MEDIA_TEXT_CHARS {
-        return value;
-    }
-    value.chars().take(MAX_MEDIA_TEXT_CHARS).collect()
-}
-
-/// 读取一次 SMTC 缩略图流，同时生成 WebView 图片和封面主色。
-fn read_artwork(thumbnail: &IRandomAccessStreamReference) -> Result<Option<MediaArtwork>, String> {
-    let stream = thumbnail
-        .OpenReadAsync()
-        .and_then(|operation| operation.get())
-        .map_err(|error| format!("无法打开媒体封面流：{error}"))?;
-    let size = stream
-        .Size()
-        .map_err(|error| format!("无法读取媒体封面大小：{error}"))?;
-
-    if size == 0 {
-        return Ok(None);
-    }
-    if size > MAX_ARTWORK_BYTES {
-        return Err(format!(
-            "媒体封面大小为 {size} 字节，超过 {MAX_ARTWORK_BYTES} 字节限制"
-        ));
-    }
-
-    let byte_count = u32::try_from(size).map_err(|_| "媒体封面大小无法转换为 u32".to_owned())?;
-    let input_stream = stream
-        .GetInputStreamAt(0)
-        .map_err(|error| format!("无法定位媒体封面流：{error}"))?;
-    let reader = DataReader::CreateDataReader(&input_stream)
-        .map_err(|error| format!("无法创建媒体封面读取器：{error}"))?;
-    let loaded_count = reader
-        .LoadAsync(byte_count)
-        .and_then(|operation| operation.get())
-        .map_err(|error| format!("无法载入媒体封面字节：{error}"))?;
-    let mut bytes = vec![0; loaded_count as usize];
-    reader
-        .ReadBytes(&mut bytes)
-        .map_err(|error| format!("无法复制媒体封面字节：{error}"))?;
-
-    if bytes.is_empty() {
-        return Ok(None);
-    }
-
-    let reported_content_type = stream
-        .ContentType()
-        .map(|content_type| content_type.to_string())
-        .unwrap_or_default();
-    let content_type = detect_artwork_content_type(&bytes, &reported_content_type);
-    // 当前函数运行在专用媒体元数据线程中，图片解码不会阻塞 Tauri 命令或 WebView。
-    let accent_color = extract_dominant_color(&bytes)?;
-    let encoded = BASE64_STANDARD.encode(&bytes);
-
-    Ok(Some(MediaArtwork {
-        data_url: format!("data:{content_type};base64,{encoded}"),
-        accent_color,
-    }))
-}
-
-/// 从缩小后的封面中选择出现频率高、且在深浅背景上都可辨识的颜色。
-fn extract_dominant_color(bytes: &[u8]) -> Result<Option<String>, String> {
-    let mut reader = image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|error| format!("无法识别媒体封面格式：{error}"))?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(MAX_ARTWORK_DIMENSION);
-    limits.max_image_height = Some(MAX_ARTWORK_DIMENSION);
-    limits.max_alloc = Some(MAX_ARTWORK_DECODE_BYTES);
-    reader.limits(limits);
-    let image = reader
-        .decode()
-        .map_err(|error| format!("媒体封面损坏或超过解码限制：{error}"))?
-        .thumbnail(48, 48)
-        .to_rgba8();
-    let mut buckets = [ColorBucket::default(); 4096];
-
-    for pixel in image.pixels() {
-        let [red, green, blue, alpha] = pixel.0;
-        if alpha < 128 {
-            continue;
-        }
-
-        let index = ((usize::from(red) >> 4) << 8)
-            | ((usize::from(green) >> 4) << 4)
-            | (usize::from(blue) >> 4);
-        let bucket = &mut buckets[index];
-        bucket.count += 1;
-        bucket.red_sum += u64::from(red);
-        bucket.green_sum += u64::from(green);
-        bucket.blue_sum += u64::from(blue);
-    }
-
-    let mut best: Option<(u64, u8, u8, u8)> = None;
-    for bucket in buckets.into_iter().filter(|bucket| bucket.count > 0) {
-        let count = u64::from(bucket.count);
-        let red = (bucket.red_sum / count) as u8;
-        let green = (bucket.green_sum / count) as u8;
-        let blue = (bucket.blue_sum / count) as u8;
-        let maximum = red.max(green).max(blue);
-        let minimum = red.min(green).min(blue);
-        let saturation = maximum - minimum;
-
-        // 低饱和颜色容易与任务栏融为一体；同时要求候选色在典型深浅背景上均有辨识度。
-        if saturation < 24 || !has_sufficient_taskbar_contrast(red, green, blue) {
-            continue;
-        }
-
-        // 在出现频率仍占主导的前提下，提高鲜艳候选色的权重，避免总是选中大面积灰暗背景。
-        let score = count * (u64::from(saturation) * 2 + 32);
-        if best
-            .as_ref()
-            .map_or(true, |(best_score, ..)| score > *best_score)
-        {
-            best = Some((score, red, green, blue));
-        }
-    }
-
-    Ok(best.map(|(_, red, green, blue)| {
-        let (red, green, blue) = enhance_color_saturation(red, green, blue);
-        format!("#{red:02X}{green:02X}{blue:02X}")
-    }))
-}
-
-/// 温和提高颜色饱和度并保持最高通道亮度；增强后对比度不足时保留原色。
-fn enhance_color_saturation(red: u8, green: u8, blue: u8) -> (u8, u8, u8) {
-    let maximum = red.max(green).max(blue);
-    let minimum = red.min(green).min(blue);
-    let difference = maximum - minimum;
-    if maximum == 0 || difference == 0 {
-        return (red, green, blue);
-    }
-
-    let maximum = f64::from(maximum);
-    let saturation = f64::from(difference) / maximum;
-    let enhanced_saturation = (saturation * 1.15 + 0.05).min(1.0);
-    let expansion = enhanced_saturation / saturation;
-
-    // 以最亮通道为锚点向外拉开其余通道，保持色相和视觉亮度基本稳定。
-    let enhance_channel = |channel: u8| {
-        (maximum - (maximum - f64::from(channel)) * expansion)
-            .round()
-            .clamp(0.0, 255.0) as u8
-    };
-    let enhanced = (
-        enhance_channel(red),
-        enhance_channel(green),
-        enhance_channel(blue),
-    );
-
-    if has_sufficient_taskbar_contrast(enhanced.0, enhanced.1, enhanced.2) {
-        enhanced
-    } else {
-        (red, green, blue)
-    }
-}
-
-/// 判断颜色相对典型深色与浅色任务栏背景是否都具有最低辨识度。
-fn has_sufficient_taskbar_contrast(red: u8, green: u8, blue: u8) -> bool {
-    let luminance = relative_luminance(red, green, blue);
-    let light_background = relative_luminance(245, 245, 245);
-    let dark_background = relative_luminance(32, 32, 32);
-    contrast_ratio(luminance, light_background) >= 1.6
-        && contrast_ratio(luminance, dark_background) >= 1.6
-}
-
-/// 将 sRGB 颜色转换为用于对比度计算的相对亮度。
-fn relative_luminance(red: u8, green: u8, blue: u8) -> f64 {
-    /// 将单个 sRGB 通道转换为线性光通道。
-    fn linearize(channel: u8) -> f64 {
-        let channel = f64::from(channel) / 255.0;
-        if channel <= 0.04045 {
-            channel / 12.92
-        } else {
-            ((channel + 0.055) / 1.055).powf(2.4)
-        }
-    }
-
-    0.2126 * linearize(red) + 0.7152 * linearize(green) + 0.0722 * linearize(blue)
-}
-
-/// 计算两个相对亮度之间的 WCAG 对比度。
-fn contrast_ratio(first: f64, second: f64) -> f64 {
-    let lighter = first.max(second);
-    let darker = first.min(second);
-    (lighter + 0.05) / (darker + 0.05)
-}
-
-/// 读取 Windows 当前强调色；系统 API 不可用时采用 Windows 默认蓝色。
-fn read_windows_accent_color() -> String {
-    let mut colorization = 0_u32;
-    let mut opaque_blend = BOOL::default();
-    if unsafe { DwmGetColorizationColor(&mut colorization, &mut opaque_blend) }.is_err() {
-        return DEFAULT_WINDOWS_ACCENT_COLOR.to_owned();
-    }
-
-    format!("#{:06X}", colorization & 0x00FF_FFFF)
-}
-
-/// 根据图片文件头确定 WebView 使用的 MIME；无法识别时才采用播放器上报的首个类型。
-fn detect_artwork_content_type(bytes: &[u8], reported_content_type: &str) -> String {
-    let detected = if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        Some("image/jpeg")
-    } else if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
-        Some("image/png")
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        Some("image/gif")
-    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
-        Some("image/webp")
-    } else if bytes.starts_with(b"BM") {
-        Some("image/bmp")
-    } else {
-        None
-    };
-
-    if let Some(content_type) = detected {
-        return content_type.to_owned();
-    }
-
-    // 有些播放器会返回逗号分隔的扩展名列表。data URL 只接受单一 MIME，
-    // 因此最多采用第一个不带参数的 image/* 类型。
-    let reported = reported_content_type
-        .split([',', ';'])
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    if reported.starts_with("image/") {
-        reported
-    } else {
-        "image/jpeg".to_owned()
-    }
-}
-
 /// 从已取得的播放信息中转换应用播放状态。
 fn playback_status_from_info(
     playback_info: &GlobalSystemMediaTransportControlsSessionPlaybackInfo,
@@ -1414,25 +1071,4 @@ fn collect_session_identities(
     }
 
     Ok(identities)
-}
-
-/// 根据 Source App ID 中稳定的品牌或可执行文件标识识别四个目标播放器。
-pub(crate) fn identify_media_player(source_app_id: &str) -> MediaPlayerKind {
-    let normalized = source_app_id.to_ascii_lowercase();
-
-    if normalized.contains("qqmusic") {
-        MediaPlayerKind::QqMusic
-    } else if normalized.contains("cloudmusic") || normalized.contains("netease") {
-        MediaPlayerKind::NeteaseCloudMusic
-    } else if normalized.contains("kugou") || normalized.contains("kgmusic") {
-        MediaPlayerKind::KugouMusic
-    } else if normalized == "汽水音乐"
-        || normalized.contains("qishui")
-        || normalized.contains("com.ss.android.ugc.luna")
-        || normalized.ends_with("luna.exe")
-    {
-        MediaPlayerKind::QishuiMusic
-    } else {
-        MediaPlayerKind::Other
-    }
 }

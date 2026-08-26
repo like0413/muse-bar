@@ -4,15 +4,12 @@ import { shallowRef } from 'vue'
 
 import { setBarMediaAvailable } from '@/lib/bar-window'
 import {
-  getCurrentMediaSnapshot,
   listenToCurrentMediaSnapshotChanges,
   listenToCurrentTimelineChanges,
   listenToMediaSessionActivityChanges,
-  refreshSelectedMediaSession,
-  type CurrentTimeline,
-  type MediaSelectionReason,
-  type MediaSnapshot,
-} from '@/lib/media-api'
+} from '@/lib/media-event-api'
+import { getCurrentMediaSnapshot, refreshSelectedMediaSession } from '@/lib/media-query-api'
+import type { CurrentTimeline, MediaSelectionReason, MediaSnapshot } from '@/lib/media-types'
 import { getSettings, listenToSettingsChanges, type SettingsPayload } from '@/lib/settings-api'
 
 const selectionReasonLabels: Record<MediaSelectionReason, string> = {

@@ -2,7 +2,10 @@ use tauri::{AppHandle, State};
 
 use crate::media_activity::{MediaSessionActivity, SelectedMediaSession};
 use crate::media_control::{ControlAction, MediaControlError};
-use crate::system_media::{MediaSessionIdentity, MediaSnapshot, SystemMediaManager};
+use crate::{
+    media_model::{MediaSessionIdentity, MediaSnapshot},
+    system_media::SystemMediaManager,
+};
 
 /// 返回全部媒体会话的原始来源标识和播放器分类。
 #[tauri::command]

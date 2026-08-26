@@ -5,7 +5,8 @@ import { computed, shallowRef } from 'vue'
 
 import { Button } from '@/components/ui/button'
 import { ButtonGroup } from '@/components/ui/button-group'
-import { controlMedia, type ControlAction } from '@/lib/media-api'
+import { controlMedia } from '@/lib/media-control-api'
+import type { ControlAction } from '@/lib/media-types'
 
 import { useBarStore } from '../bar-store'
 

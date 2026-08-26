@@ -90,30 +90,48 @@ Windows 会话发生变化
 | 进度动画的帧间估算   | Bar 页面        | 定期由 Rust 时间轴快照校准     |
 | 设置表单草稿         | 设置页面        | 保存成功后以 Rust 返回值为准   |
 
-## 计划中的目录边界
+## 当前目录与依赖边界
 
 ```text
 src/
-  components/ui/   shadcn-vue 源码组件
-  pages/           Bar 与设置页，只组合 UI
-  stores/          媒体和设置的前端投影
-  router/          /bar 与 /settings 的 Hash Router
-  types/           可序列化桥接类型
+  components/ui/                  shadcn-vue 源码组件
+  lib/media-types.ts              媒体 IPC 的共享 DTO
+  lib/media-query-api.ts          媒体快照与会话选择查询
+  lib/media-control-api.ts        用户媒体控制请求
+  lib/media-event-api.ts          Rust 到前端的媒体事件
+  lib/media-diagnostics-api.ts    设置页媒体诊断查询
+  pages/bar/                       Bar Store 与显示组件
+  pages/settings/                  设置窗口 Store 与分区组件
+  router/                          /bar 与 /settings 的 Hash Router
 
 src-tauri/src/
-  commands/        Tauri command 薄入口
-  events/          事件名称和发送帮助函数
-  settings/        AppSettings 与 JSON 持久化
-  media/           WinRT 会话读取、选择与控制
-  taskbar/         Win32 发现、测量和窗口宿主
-  state/           AppState 与跨线程共享状态
+  commands/                       Tauri command 薄入口
+  media_model.rs                  可序列化媒体 DTO 与播放器识别策略
+  media_selection.rs              只依赖普通数据的会话选择策略
+  media_artwork.rs                封面读取、格式识别与颜色提取
+  system_media.rs                 WinRT 媒体运行时与事件协调
+  taskbar_layout.rs               只依赖矩形数据的布局决策
+  taskbar_occupancy.rs            UI Automation / Win32 任务栏采集
+  settings.rs                     AppSettings 与 JSON 持久化
+  state.rs                        AppState 与跨线程共享状态
 
 docs/              架构、基线与兼容性记录
 ```
 
-模块首次出现时只公开当前步骤需要的最小接口。Windows 专用模块使用
-`#[cfg(target_os = "windows")]` 隔离，纯逻辑（例如媒体选择器）保持不依赖 Win32，
-以便代码保持清晰并避免系统细节向上层泄漏。
+模块只公开调用方需要的最小接口。`media_selection` 和 `taskbar_layout` 不接收 WinRT、`HWND`
+或 Tauri handle；Windows 采集结果先转换为普通 DTO 或矩形，再交给策略模块。前端只有
+`src/lib/*-api.ts` 可以导入 Tauri 的 `invoke`，Vue 组件通过 Store 或 typed API 使用能力。
+
+设置外观分区采用以下单向数据流：
+
+```text
+AppearanceSettingsSection（Store 连接容器）
+  -> 各 Appearance*Card（只读 props）
+    -> BarAppearancePreview（纯展示 props）
+  <- change(SettingsPatch) 事件
+```
+
+子卡片不导入 Pinia Store；设置写入仍由连接容器调用唯一的 `saveSettingsPatch` action。
 
 ## 注释约定
 
@@ -133,6 +151,6 @@ docs/              架构、基线与兼容性记录
 
 ## 阶段验收方式
 
-本项目不维护自动化测试套件，也不在开发过程中手动运行 lint、format 或 check。每个步骤
-至少包含一种可观察结果：诊断 JSON、窗口行为或日志；代码检查交给提交时的 staged hooks。
-涉及 Child 挂载、自动隐藏、全屏和 Explorer 重启的行为必须在真实 Windows 11 环境人工验证。
+本项目不维护自动化测试套件。每章至少运行前端格式、lint、类型检查、Rustfmt、Cargo check、
+严格 Clippy 和生产构建，并包含一种可观察结果：诊断 JSON、窗口行为或日志。涉及 Child 挂载、
+自动隐藏、全屏和 Explorer 重启的行为必须在真实 Windows 11 环境人工验证。

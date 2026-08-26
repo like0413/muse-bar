@@ -24,8 +24,17 @@ mod explorer_monitor;
 /// 所有媒体会话的有效活动时间跟踪。
 mod media_activity;
 
+/// 媒体封面读取、格式识别和主题色提取。
+mod media_artwork;
+
 /// 当前选中媒体会话的播放与切歌控制。
 mod media_control;
+
+/// 可序列化媒体 DTO、文本边界与播放器识别策略。
+mod media_model;
+
+/// 仅依赖普通数据的媒体会话选择策略。
+mod media_selection;
 
 /// 与操作系统交互的条件编译边界。
 mod platform;
@@ -44,6 +53,9 @@ mod state;
 
 /// Windows 任务栏的发现与运行时信息。
 mod taskbar;
+
+/// 仅依赖矩形数据的任务栏布局与避让策略。
+mod taskbar_layout;
 
 /// Windows 11 任务栏原生控件占用区域的读取与回退。
 mod taskbar_occupancy;

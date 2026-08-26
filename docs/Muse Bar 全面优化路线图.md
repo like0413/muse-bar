@@ -134,8 +134,8 @@ Windows 人工验收：
 |    5 | 第五章：IPC 与 Tauri Command    | 已完成 | 第四章完成   | 已进入第六章 |
 |    6 | 第六章：可靠性与恢复能力        | 已完成 | 第五章完成   | 已完成       |
 |    7 | 第七章：测试体系                | 已跳过 | 第六章完成   | 不实施       |
-|    8 | 第八章：架构与 SOLID            | 未开始 | 第六章完成   | 下一章       |
-|    9 | 第九章：Rust 模块和代码质量     | 未开始 | 第八章完成   | 等待第八章   |
+|    8 | 第八章：架构与 SOLID            | 已完成 | 第六章完成   | 已完成       |
+|    9 | 第九章：Rust 模块和代码质量     | 未开始 | 第八章完成   | 下一章       |
 |   10 | 第十章：状态管理与数据一致性    | 未开始 | 第九章完成   | 等待第九章   |
 |   11 | 第十一章：Vue 组件与前端结构    | 未开始 | 第十章完成   | 等待第十章   |
 |   12 | 第十二章：性能优化              | 未开始 | 第十一章完成 | 等待第十一章 |
@@ -621,82 +621,119 @@ Explorer 连续终止、真实自动隐藏切换、多显示器 DPI 热变更、
 
 # 八、架构与 SOLID
 
-### 1. 单一职责 SRP
+状态：`Confirmed`，已完成。
 
-重点拆分职责混合的模块：
+本章按真实依赖和变化原因应用 SOLID，不以文件行数、模式数量或 trait 数量作为完成指标。Command
+名称、事件名、ACL、IPC DTO 字段、设置持久化语义和 Windows 恢复策略保持不变。
 
-- `system_media.rs`：媒体管理器、事件订阅、元数据、封面、颜色、时间轴混合。
-- `media_activity.rs`：会话观察、活动记录、选择算法和事件发布混合。
-- `taskbar_occupancy.rs`：采集、缓存、分类、回退策略混合。
-- `AppearanceSettingsSection.vue`：多组设置 UI、校验和草稿同步混合。
-- `settings-store.ts`：表单状态、IPC、错误、生命周期混合。
+## 1. 单一职责 SRP
 
-建议按真实职责拆分，但不建立空洞的多层目录。
+已完成四处有证据的职责拆分：
 
-### 2. 开闭原则 OCP
+| 原边界                          | 已提取职责                                                                                  | 保留职责                                |
+| ------------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `system_media.rs`               | `media_model` 的 DTO/播放器识别，`media_artwork` 的封面与颜色，`media_selection` 的选择策略 | WinRT 运行时、订阅、会话绑定和事件协调  |
+| `media_activity.rs`             | 选择优先级只接收 `MediaSelectionCandidate`                                                  | Windows 活动采集、记录和事件发布        |
+| `taskbar_occupancy.rs`          | `taskbar_layout` 的矩形与 Bar 布局决策                                                      | UI Automation、Win32 回退和可信布局缓存 |
+| `AppearanceSettingsSection.vue` | 5 张设置卡和 1 个纯预览组件                                                                 | Store 连接与 `SettingsPatch` 转发       |
 
-把容易扩展的策略从流程代码中提取：
+拆分后 `system_media.rs` 从 1438 行降为 1074 行，`taskbar_occupancy.rs` 从 658 行降为
+409 行，外观入口组件从 496 行降为 52 行。行数只是拆分结果，边界依据分别是系统采集、策略决策、
+数据契约和 UI 展示的不同变化原因。
 
-- 播放器识别规则。
-- 媒体会话选择规则。
-- 任务栏占用区域识别规则。
-- 设置迁移步骤。
-- 进度颜色来源。
-- 窗口宿主模式。
+`settings-store.ts` 状态为 `Verify → Keep`：它虽然同时读取多个设置页数据源，但当前唯一职责是
+拥有设置窗口的启动、异步监听器注册和统一销毁。拆成多个 Store 会让监听器生命周期和页面激活状态
+出现多个所有者；状态领域拆分留到第十章在完整状态所有权审计后决定。
 
-目标是增加播放器或迁移版本时，少修改核心协调流程。
+## 2. 开闭原则 OCP
 
-### 3. 里氏替换 LSP
+状态：`Confirmed / Keep / Conditional`。
 
-Rust 当前没有明显的复杂继承体系，LSP 不是主要风险。若未来为任务栏检测、媒体源建立 trait，应保证：
+- 播放器识别从运行时流程提取为 `PLAYER_IDENTIFICATION_RULES` 策略表。增加播放器时集中增加枚举
+  映射和一条识别规则，不修改 WinRT 会话协调流程。
+- 播放/暂停优先级从活动跟踪器提取到 `media_selection`，策略只消费普通候选 DTO；活动来源变化不
+  影响选择算法，选择规则变化也不触碰事件订阅。
+- 任务栏中央按钮识别、可用区域和 Bar 横坐标统一位于 `taskbar_layout`；更换采集来源时仍可复用
+  相同布局策略。
+- 设置迁移保持 `Conditional`：当前不存在多个真实迁移步骤，普通新增字段仍由 `serde(default)`
+  处理。只有出现第二个不兼容结构迁移时才建立按版本顺序执行的迁移表。
+- 进度颜色来源和窗口宿主模式目前都是有限产品枚举，没有运行时插件需求；保留显式 `match`，不为
+  假设中的扩展点增加 trait 或注册器。
 
-- 所有实现遵循相同错误语义。
-- 不出现某个实现接受输入后偷偷忽略操作。
-- 不用 trait 伪装本质上能力不同的平台接口。
+## 3. 里氏替换 LSP
 
-现阶段不建议为了 SOLID 主动增加 trait。
+状态：`Verify → Keep`。
 
-### 4. 接口隔离 ISP
+当前项目没有承担同一契约的多实现 trait、继承层级或运行时可替换对象，因此没有可证实的替换违规。
+本章不创建只拥有一个实现的 trait。未来确实出现第二种媒体源或任务栏采集器时，才要求各实现遵守
+相同输入前置条件、错误语义和返回值保证，并在调用方需要运行时替换时选择动态分发。
 
-避免前端模块暴露过大的 API：
+## 4. 接口隔离 ISP
 
-- 将 `media-api.ts` 分为查询、控制、事件三个接口面。
-- Settings 页面不应接触媒体诊断接口。
-- Bar 页面只导入渲染所需快照和控制接口。
-- Rust command 按窗口用途检查暴露范围。
-- Composable/Store 只暴露只读状态和明确 action。
+状态：`Confirmed`，已完成。
 
-### 5. 依赖倒置 DIP
+原 `media-api.ts` 同时暴露 DTO、查询、控制、事件和设置页诊断，现已删除并拆为：
 
-优先在需要测试的边界应用：
+| 接口面                     | 消费者与职责                             |
+| -------------------------- | ---------------------------------------- |
+| `media-types.ts`           | Bar、Settings 共享的只读 TypeScript 契约 |
+| `media-query-api.ts`       | 当前快照和会话选择查询                   |
+| `media-control-api.ts`     | 用户媒体控制动作                         |
+| `media-event-api.ts`       | 快照、时间轴、会话和活动事件订阅         |
+| `media-diagnostics-api.ts` | 设置页会话身份与活动记录诊断             |
 
-- 媒体选择算法依赖普通 DTO，不直接依赖 WinRT session。
-- 设置迁移依赖序列化数据，不依赖 Tauri `AppHandle`。
-- 任务栏几何计算依赖矩形数据，不直接依赖 HWND。
-- Windows API 获取负责采集，纯逻辑负责决策。
+Bar 控制组件不再导入诊断或事件能力，设置 Store 不再导入控制能力。外观子组件只接收所需 props，并
+通过类型化 `change(SettingsPatch)` 事件请求保存；只有连接容器能访问完整 Settings Store。
+Rust Command 的 18 个注册名和按窗口 capability 未变化，继续沿用第五章的最小权限接口面。
 
-不建议在所有 Rust 模块上引入 repository/service trait。
+## 5. 依赖倒置 DIP
 
-### 6. 明确模块依赖规则
+状态：`Confirmed`，已完成到当前需求需要的程度。
 
-建立并检查以下方向：
+- `media_selection` 依赖 `MediaSelectionCandidate` 和 `MediaPlayerKind`，不依赖 WinRT session。
+- `taskbar_layout` 依赖项目普通矩形、任务栏矩形和位置枚举，不依赖 `HWND`、UI Automation 或 COM。
+- `media_model` 集中 Rust 到 TypeScript 的可序列化媒体 DTO，不引用 Tauri handle 或 Windows 类型。
+- Windows adapter/采集模块负责把系统对象转换为普通数据；Command 继续只转发到应用逻辑。
 
-```
+项目当前没有数据库、远程服务或多后端实现，因此不引入 repository/service trait、`Box<dyn Trait>`
+或依赖注入容器。模块边界和静态分发已经提供所需解耦。
+
+## 6. 模块依赖规则
+
+当前依赖方向已经写入 `docs/architecture.md`：
+
+```text
 Vue Component
-  → Store / composable
-  → Typed IPC API
-  → Tauri command
-  → Application logic
-  → Windows adapter
+  -> Store / typed feature API
+  -> Tauri command
+  -> runtime coordinator
+  -> Windows acquisition adapter
+
+plain DTO / selection / layout policy <- coordinator or adapter
 ```
 
-禁止：
+静态审计结果：
 
-- Vue 组件散落直接 `invoke()`。
-- Command 内实现复杂业务算法。
-- Windows 类型泄漏到 IPC DTO。
-- Rust 应用层反向依赖窗口 UI。
-- Store 相互直接修改内部状态。
+- `src/pages/**` 没有直接导入 `invoke`；IPC 调用集中在 `src/lib/*-api.ts`。
+- 旧 `media-api.ts` 已删除且没有残留引用。
+- 外观设置只有连接容器导入 Settings Store，6 个子组件均使用 typed props/emits。
+- `media_model`、`media_selection` 和 `taskbar_layout` 不含 WinRT、COM、`HWND` 或 Tauri handle。
+- Command 注册、事件常量和 capability 文件没有因本章拆分变化。
+
+## 本章验收
+
+2026-08-26 已完成：
+
+- `vp check`：前端格式、lint 和 TypeScript 检查通过。
+- `cargo fmt --check` 与 `cargo check --locked`：Rust 格式和生产代码编译通过。
+- `cargo clippy --locked --all-targets --all-features -- -D warnings`：严格 Clippy 通过。
+- `vp build`：前端生产构建通过。
+- `vp exec tauri dev`：Bar 正常启动；第二实例正常唤醒 Settings，未出现 Command not found、ACL
+  拒绝、事件订阅或 Vue 运行时错误。
+- 验证结束后已关闭本章启动的 Muse Bar、Tauri 和 Vite+ 进程；端口 1420 空闲。
+
+本章没有新增或运行自动化测试代码。Explorer 故障注入、多显示器 DPI 和自动隐藏任务栏等系统行为
+沿用第六章人工矩阵，本章未改变对应采集或恢复语义。
 
 ---
 

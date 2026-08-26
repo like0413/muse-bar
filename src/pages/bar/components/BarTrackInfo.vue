@@ -10,7 +10,7 @@ import {
   watch,
 } from 'vue'
 
-import type { CurrentPlaybackStatus, CurrentTimeline } from '@/lib/media-api'
+import type { CurrentPlaybackStatus, CurrentTimeline } from '@/lib/media-types'
 import {
   readElementAlignment,
   readTitleScrollEnabled,

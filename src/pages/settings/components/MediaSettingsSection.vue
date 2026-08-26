@@ -7,7 +7,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import type { MediaActivityReason, MediaPlayerKind } from '@/lib/media-api'
+import type { MediaActivityReason, MediaPlayerKind } from '@/lib/media-types'
 
 import { useSettingsStore } from '../settings-store'
 

@@ -2,18 +2,15 @@ import type { UnlistenFn } from '@tauri-apps/api/event'
 import { defineStore } from 'pinia'
 import { shallowRef } from 'vue'
 
+import { getMediaSessionActivities, getMediaSessionIdentities } from '@/lib/media-diagnostics-api'
 import {
-  getCurrentMediaSnapshot,
-  getMediaSessionActivities,
-  getMediaSessionIdentities,
   listenToCurrentMediaSnapshotChanges,
   listenToCurrentTimelineChanges,
   listenToMediaSessionActivityChanges,
   listenToMediaSessionIdentityChanges,
-  type MediaSessionActivity,
-  type MediaSessionIdentity,
-  type MediaSnapshot,
-} from '@/lib/media-api'
+} from '@/lib/media-event-api'
+import { getCurrentMediaSnapshot } from '@/lib/media-query-api'
+import type { MediaSessionActivity, MediaSessionIdentity, MediaSnapshot } from '@/lib/media-types'
 import { getRuntimeInfo } from '@/lib/runtime-info'
 import {
   getSettings,

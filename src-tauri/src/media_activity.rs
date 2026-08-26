@@ -23,7 +23,10 @@ use windows::{
 };
 
 use crate::background_worker::{join_with_timeout, WORKER_SHUTDOWN_TIMEOUT};
-use crate::system_media::{bounded_media_text, identify_media_player, MediaPlayerKind};
+use crate::{
+    media_model::{bounded_media_text, identify_media_player, MediaPlayerKind},
+    media_selection::MediaSelectionCandidate,
+};
 
 const MEDIA_SESSION_ACTIVITIES_CHANGED_EVENT: &str = "media-session-activities-changed";
 const MAX_PENDING_ACTIVITY_REQUESTS: usize = 64;
@@ -730,28 +733,15 @@ fn activity_snapshots(state: &ActivityState) -> Vec<MediaSessionActivity> {
 
 /// 纯粹依据活动记录选择四家播放器，不读取 WinRT 或修改任何状态。
 fn select_preferred_session_key(state: &ActivityState) -> Option<u64> {
-    let newest = |require_playing: bool| {
-        state
-            .records
-            .iter()
-            .filter(|(_, record)| record.player_kind != MediaPlayerKind::Other)
-            .filter(|(_, record)| {
-                if require_playing {
-                    record.is_playing
-                } else {
-                    record.is_paused
-                }
-            })
-            .filter_map(|(session_key, record)| {
-                record
-                    .activity_sequence
-                    .map(|sequence| (*session_key, sequence))
-            })
-            .max_by_key(|(_, sequence)| *sequence)
-            .map(|(session_key, _)| session_key)
-    };
-
-    newest(true).or_else(|| newest(false))
+    crate::media_selection::select_preferred_session_key(state.records.iter().map(
+        |(session_key, record)| MediaSelectionCandidate {
+            session_key: *session_key,
+            player_kind: record.player_kind,
+            is_playing: record.is_playing,
+            is_paused: record.is_paused,
+            activity_sequence: record.activity_sequence,
+        },
+    ))
 }
 
 /// 广播当前全部会话活动，供设置页验证活动序号不会被时间轴刷新改变。
