@@ -1,10 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{
-        mpsc::{self, Receiver, Sender},
+        mpsc::{self, Receiver, SyncSender, TrySendError},
         Arc, Mutex,
     },
-    thread,
+    thread::{self, JoinHandle},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -22,9 +22,11 @@ use windows::{
     Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED},
 };
 
-use crate::system_media::{identify_media_player, MediaPlayerKind};
+use crate::background_worker::{join_with_timeout, WORKER_SHUTDOWN_TIMEOUT};
+use crate::system_media::{bounded_media_text, identify_media_player, MediaPlayerKind};
 
 const MEDIA_SESSION_ACTIVITIES_CHANGED_EVENT: &str = "media-session-activities-changed";
+const MAX_PENDING_ACTIVITY_REQUESTS: usize = 64;
 
 /// 最近一次有效活动发生的原因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -107,6 +109,12 @@ struct ActivityRequest {
     kind: ActivityRequestKind,
 }
 
+/// 活动线程接收的更新或显式停止消息。
+enum ActivityMessage {
+    Update(ActivityRequest),
+    Shutdown,
+}
+
 /// 保存注销单个会话事件所需的 token。
 struct SessionActivityObservation {
     session_key: u64,
@@ -132,9 +140,10 @@ impl SessionActivityObservation {
 
 /// 仅在最后一个跟踪器引用释放时清理全部会话监听。
 struct MediaActivityTrackerInner {
-    sender: Sender<ActivityRequest>,
+    sender: Option<SyncSender<ActivityMessage>>,
     state: Arc<Mutex<ActivityState>>,
     observations: Mutex<Vec<SessionActivityObservation>>,
+    worker: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Drop for MediaActivityTrackerInner {
@@ -143,6 +152,15 @@ impl Drop for MediaActivityTrackerInner {
         if let Ok(observations) = self.observations.get_mut() {
             for observation in observations.iter() {
                 observation.unsubscribe();
+            }
+        }
+        if let Some(sender) = self.sender.take() {
+            let _ = sender.try_send(ActivityMessage::Shutdown);
+            drop(sender);
+        }
+        if let Ok(worker) = self.worker.get_mut() {
+            if let Some(worker) = worker.take() {
+                join_with_timeout(worker, "媒体活动", WORKER_SHUTDOWN_TIMEOUT);
             }
         }
     }
@@ -160,21 +178,22 @@ impl MediaActivityTracker {
         manager: &GlobalSystemMediaTransportControlsSessionManager,
         app: &AppHandle<R>,
     ) -> Result<Self, String> {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(MAX_PENDING_ACTIVITY_REQUESTS);
         let state = Arc::new(Mutex::new(ActivityState::default()));
         let worker_state = Arc::clone(&state);
         let worker_app = app.clone();
 
-        thread::Builder::new()
+        let worker = thread::Builder::new()
             .name("muse-bar-media-activity".to_owned())
             .spawn(move || run_activity_worker(receiver, worker_state, worker_app))
             .map_err(|error| format!("无法启动媒体活动后台线程：{error}"))?;
 
         let tracker = Self {
             inner: Arc::new(MediaActivityTrackerInner {
-                sender,
+                sender: Some(sender),
                 state,
                 observations: Mutex::new(Vec::new()),
+                worker: Mutex::new(Some(worker)),
             }),
         };
         tracker.refresh_sessions(manager, app)?;
@@ -250,12 +269,13 @@ impl MediaActivityTracker {
         }
 
         let mut new_observations = Vec::with_capacity(session_entries.len());
+        let sender = self
+            .inner
+            .sender
+            .as_ref()
+            .ok_or_else(|| "媒体活动跟踪器正在关闭".to_owned())?;
         for (session_key, _, session) in session_entries {
-            new_observations.push(subscribe_session_activity(
-                session_key,
-                &session,
-                &self.inner.sender,
-            )?);
+            new_observations.push(subscribe_session_activity(session_key, &session, sender)?);
         }
         *self
             .inner
@@ -275,14 +295,16 @@ impl MediaActivityTracker {
         let Some(session) = session else {
             return;
         };
-        send_activity_request(
-            &self.inner.sender,
-            ActivityRequest {
-                session_key: session_key(session),
-                session: session.clone(),
-                kind: ActivityRequestKind::BecameCurrent,
-            },
-        );
+        if let Some(sender) = &self.inner.sender {
+            send_activity_request(
+                sender,
+                ActivityRequest {
+                    session_key: session_key(session),
+                    session: session.clone(),
+                    kind: ActivityRequestKind::BecameCurrent,
+                },
+            );
+        }
     }
 
     /// 返回全部会话当前的活动诊断快照。
@@ -398,7 +420,7 @@ impl MediaActivityTracker {
 fn subscribe_session_activity(
     session_key: u64,
     session: &GlobalSystemMediaTransportControlsSession,
-    sender: &Sender<ActivityRequest>,
+    sender: &SyncSender<ActivityMessage>,
 ) -> Result<SessionActivityObservation, String> {
     let playback_sender = sender.clone();
     let playback_handler: TypedEventHandler<
@@ -470,15 +492,19 @@ fn subscribe_session_activity(
 }
 
 /// 提交活动任务；后台线程已经退出时只记录一次警告。
-fn send_activity_request(sender: &Sender<ActivityRequest>, request: ActivityRequest) {
-    if let Err(error) = sender.send(request) {
-        log::warn!("无法提交媒体活动更新：{error}");
+fn send_activity_request(sender: &SyncSender<ActivityMessage>, request: ActivityRequest) {
+    match sender.try_send(ActivityMessage::Update(request)) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => {
+            log::debug!("媒体活动队列已满，本次变化将由后续状态读取覆盖")
+        }
+        Err(TrySendError::Disconnected(_)) => log::warn!("无法提交媒体活动更新：后台线程已停止"),
     }
 }
 
 /// 在固定 MTA apartment 中串行判断播放开始、切歌和当前会话变化。
 fn run_activity_worker<R: Runtime>(
-    receiver: Receiver<ActivityRequest>,
+    receiver: Receiver<ActivityMessage>,
     state: Arc<Mutex<ActivityState>>,
     app: AppHandle<R>,
 ) {
@@ -487,7 +513,10 @@ fn run_activity_worker<R: Runtime>(
         return;
     }
 
-    while let Ok(request) = receiver.recv() {
+    while let Ok(message) = receiver.recv() {
+        let ActivityMessage::Update(request) = message else {
+            break;
+        };
         if let Err(error) = apply_activity_request(&state, request) {
             log::warn!("无法更新媒体会话活动：{error}");
             continue;
@@ -644,14 +673,18 @@ fn read_track_identity(
         .TryGetMediaPropertiesAsync()
         .and_then(|operation| operation.get())
         .map_err(|error| format!("无法读取媒体活动曲目信息：{error}"))?;
-    let title = properties
-        .Title()
-        .map_err(|error| format!("无法读取媒体活动标题：{error}"))?
-        .to_string();
-    let artist = properties
-        .Artist()
-        .map_err(|error| format!("无法读取媒体活动歌手：{error}"))?
-        .to_string();
+    let title = bounded_media_text(
+        properties
+            .Title()
+            .map_err(|error| format!("无法读取媒体活动标题：{error}"))?
+            .to_string(),
+    );
+    let artist = bounded_media_text(
+        properties
+            .Artist()
+            .map_err(|error| format!("无法读取媒体活动歌手：{error}"))?
+            .to_string(),
+    );
     Ok((title, artist))
 }
 
@@ -733,5 +766,68 @@ fn emit_activity_state<R: Runtime>(state: &Arc<Mutex<ActivityState>>, app: &AppH
 
     if let Err(error) = app.emit(MEDIA_SESSION_ACTIVITIES_CHANGED_EVENT, snapshots) {
         log::warn!("无法广播媒体会话活动变化：{error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{select_preferred_session_key, ActivityRecord, ActivityState};
+    use crate::system_media::MediaPlayerKind;
+
+    fn activity_record(
+        player_kind: MediaPlayerKind,
+        is_playing: bool,
+        is_paused: bool,
+        sequence: u64,
+    ) -> ActivityRecord {
+        ActivityRecord {
+            source_app_id: "player".to_owned(),
+            player_kind,
+            title: Some("track".to_owned()),
+            artist: Some("artist".to_owned()),
+            is_playing,
+            is_paused,
+            last_activity_at_unix_ms: Some(sequence),
+            activity_sequence: Some(sequence),
+            last_activity_reason: None,
+        }
+    }
+
+    #[test]
+    fn session_selection_should_choose_newest_playing_supported_player() {
+        let mut state = ActivityState::default();
+        state
+            .records
+            .insert(1, activity_record(MediaPlayerKind::QqMusic, true, false, 3));
+        state.records.insert(
+            2,
+            activity_record(MediaPlayerKind::KugouMusic, true, false, 7),
+        );
+
+        assert_eq!(select_preferred_session_key(&state), Some(2));
+    }
+
+    #[test]
+    fn session_selection_should_fall_back_to_newest_paused_player() {
+        let mut state = ActivityState::default();
+        state
+            .records
+            .insert(1, activity_record(MediaPlayerKind::QqMusic, false, true, 8));
+        state.records.insert(
+            2,
+            activity_record(MediaPlayerKind::KugouMusic, false, true, 5),
+        );
+
+        assert_eq!(select_preferred_session_key(&state), Some(1));
+    }
+
+    #[test]
+    fn session_selection_should_ignore_unsupported_players() {
+        let mut state = ActivityState::default();
+        state
+            .records
+            .insert(1, activity_record(MediaPlayerKind::Other, true, false, 9));
+
+        assert_eq!(select_preferred_session_key(&state), None);
     }
 }

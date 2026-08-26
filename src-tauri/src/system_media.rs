@@ -1,13 +1,15 @@
 use std::{
+    io::Cursor,
     sync::{
         atomic::{AtomicU64, Ordering},
-        mpsc::{self, Receiver, Sender},
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
-    thread,
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use crate::{
+    background_worker::{join_with_timeout, WORKER_SHUTDOWN_TIMEOUT},
     media_activity::{
         session_key, MediaActivityTracker, MediaSessionActivity, SelectedMediaSession,
     },
@@ -34,6 +36,10 @@ const MEDIA_SESSION_IDENTITIES_CHANGED_EVENT: &str = "media-session-identities-c
 const CURRENT_TIMELINE_CHANGED_EVENT: &str = "current-timeline-changed";
 const CURRENT_MEDIA_SNAPSHOT_CHANGED_EVENT: &str = "current-media-snapshot-changed";
 const MAX_ARTWORK_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_ARTWORK_DIMENSION: u32 = 4096;
+const MAX_ARTWORK_DECODE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_MEDIA_TEXT_CHARS: usize = 4096;
+const MEDIA_RUNTIME_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const DEFAULT_WINDOWS_ACCENT_COLOR: &str = "#0078D4";
 
 /// 当前 Windows 系统会话提供的媒体元数据；封面与文字始终属于同一份快照。
@@ -155,37 +161,50 @@ struct MediaMetadataRequest {
     revision: u64,
 }
 
+/// 只保留最新一次元数据请求的有界邮箱。
+#[derive(Default)]
+struct MediaMetadataMailbox {
+    pending: Option<MediaMetadataRequest>,
+    shutdown: bool,
+}
+
 /// 保存异步媒体属性任务队列、最近快照和版本号。
 struct MediaMetadataLoader {
-    sender: Sender<MediaMetadataRequest>,
+    mailbox: Arc<(Mutex<MediaMetadataMailbox>, Condvar)>,
     cached: Arc<Mutex<Option<CurrentMediaMetadata>>>,
     revision: Arc<AtomicU64>,
+    worker: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl MediaMetadataLoader {
     /// 创建唯一的 MTA 工作线程，让不可跨线程的 WinRT 流始终留在同一 apartment。
-    fn start<R: Runtime>(app: &AppHandle<R>) -> Self {
-        let (sender, receiver) = mpsc::channel();
+    fn start<R: Runtime>(app: &AppHandle<R>) -> Result<Self, String> {
+        let mailbox = Arc::new((Mutex::new(MediaMetadataMailbox::default()), Condvar::new()));
         let cached = Arc::new(Mutex::new(None));
         let revision = Arc::new(AtomicU64::new(0));
         let worker_app = app.clone();
         let worker_cached = Arc::clone(&cached);
         let worker_revision = Arc::clone(&revision);
+        let worker_mailbox = Arc::clone(&mailbox);
 
-        if let Err(error) = thread::Builder::new()
+        let worker = thread::Builder::new()
             .name("muse-bar-media-metadata".to_owned())
             .spawn(move || {
-                run_media_metadata_worker(receiver, worker_cached, worker_revision, worker_app);
+                run_media_metadata_worker(
+                    worker_mailbox,
+                    worker_cached,
+                    worker_revision,
+                    worker_app,
+                );
             })
-        {
-            log::error!("无法启动媒体元数据异步线程：{error}");
-        }
+            .map_err(|error| format!("无法启动媒体元数据异步线程：{error}"))?;
 
-        Self {
-            sender,
+        Ok(Self {
+            mailbox,
             cached,
             revision,
-        }
+            worker: Mutex::new(Some(worker)),
+        })
     }
 
     /// 提交一次完整元数据读取；这里只入队，不等待任何 WinRT 操作。
@@ -196,14 +215,25 @@ impl MediaMetadataLoader {
             revision,
         };
 
-        if let Err(error) = self.sender.send(request) {
-            log::warn!("无法提交媒体元数据读取任务：{error}");
+        let (mailbox, ready) = &*self.mailbox;
+        match mailbox.lock() {
+            Ok(mut mailbox) if !mailbox.shutdown => {
+                mailbox.pending = Some(request);
+                ready.notify_one();
+            }
+            Ok(_) => log::warn!("媒体元数据线程正在关闭，已忽略新的读取请求"),
+            Err(_) => log::warn!("无法提交媒体元数据读取任务：任务邮箱锁已损坏"),
         }
     }
 
     /// 当前会话消失时使在途任务失效，并清空完整元数据缓存。
     fn clear(&self) -> Result<(), String> {
         self.revision.fetch_add(1, Ordering::AcqRel);
+        let (mailbox, _) = &*self.mailbox;
+        mailbox
+            .lock()
+            .map_err(|_| "媒体元数据任务邮箱锁已损坏".to_owned())?
+            .pending = None;
         let mut cached = self
             .cached
             .lock()
@@ -221,9 +251,25 @@ impl MediaMetadataLoader {
     }
 }
 
+impl Drop for MediaMetadataLoader {
+    fn drop(&mut self) {
+        let (mailbox, ready) = &*self.mailbox;
+        if let Ok(mut mailbox) = mailbox.lock() {
+            mailbox.shutdown = true;
+            mailbox.pending = None;
+            ready.notify_one();
+        }
+        if let Ok(worker) = self.worker.get_mut() {
+            if let Some(worker) = worker.take() {
+                join_with_timeout(worker, "媒体元数据", WORKER_SHUTDOWN_TIMEOUT);
+            }
+        }
+    }
+}
+
 /// 在固定 MTA apartment 内异步读取完整 MediaProperties，并丢弃过期切歌结果。
 fn run_media_metadata_worker<R: Runtime>(
-    receiver: Receiver<MediaMetadataRequest>,
+    mailbox: Arc<(Mutex<MediaMetadataMailbox>, Condvar)>,
     cached: Arc<Mutex<Option<CurrentMediaMetadata>>>,
     revision: Arc<AtomicU64>,
     app: AppHandle<R>,
@@ -234,11 +280,33 @@ fn run_media_metadata_worker<R: Runtime>(
         return;
     }
 
-    while let Ok(mut request) = receiver.recv() {
-        // 快速连续切歌时跳过尚未开始的旧任务，直接处理最新媒体属性。
-        while let Ok(newer_request) = receiver.try_recv() {
-            request = newer_request;
-        }
+    loop {
+        let request = {
+            let (state, ready) = &*mailbox;
+            let mut state = match state.lock() {
+                Ok(state) => state,
+                Err(_) => {
+                    log::error!("媒体元数据线程已停止：任务邮箱锁已损坏");
+                    break;
+                }
+            };
+            while state.pending.is_none() && !state.shutdown {
+                state = match ready.wait(state) {
+                    Ok(state) => state,
+                    Err(_) => {
+                        log::error!("媒体元数据线程已停止：等待任务时邮箱锁已损坏");
+                        return unsafe { RoUninitialize() };
+                    }
+                };
+            }
+            if state.shutdown {
+                break;
+            }
+            let Some(request) = state.pending.take() else {
+                continue;
+            };
+            request
+        };
 
         let result = read_media_metadata(&request.session);
         if revision.load(Ordering::Acquire) != request.revision {
@@ -277,95 +345,198 @@ fn run_media_metadata_worker<R: Runtime>(
     unsafe { RoUninitialize() };
 }
 
-/// 保存整个应用进程唯一的 Windows 全局系统媒体管理器。
+/// 允许首次 WinRT 初始化失败后在下一次媒体 IPC 时重新创建完整运行时。
 pub(crate) struct SystemMediaManager {
-    manager: Option<GlobalSystemMediaTransportControlsSessionManager>,
-    sessions_changed_token: Option<i64>,
-    current_session_changed_token: Option<i64>,
+    runtime: Mutex<MediaRuntimeSlot>,
+}
+
+struct MediaRuntimeSlot {
+    runtime: Option<SystemMediaRuntime>,
+    retry_after: Option<Instant>,
+}
+
+/// 一次完整初始化成功后共同生效的管理器、事件订阅、观察器和后台线程。
+struct SystemMediaRuntime {
+    manager: GlobalSystemMediaTransportControlsSessionManager,
+    sessions_changed_token: i64,
+    current_session_changed_token: i64,
     current_session_observation: Arc<Mutex<CurrentSessionObservation>>,
     media_metadata_loader: Arc<MediaMetadataLoader>,
-    media_activity_tracker: Option<MediaActivityTracker>,
+    media_activity_tracker: MediaActivityTracker,
 }
 
 impl SystemMediaManager {
-    /// 请求全局媒体管理器并订阅会话列表变化；失败时不阻止应用启动。
+    /// 尝试初始化媒体运行时；失败不阻止应用启动，后续 IPC 会继续重试。
     pub(crate) fn initialize<R: Runtime>(app: &AppHandle<R>) -> Self {
-        let current_session_observation =
-            Arc::new(Mutex::new(CurrentSessionObservation::default()));
-        let media_metadata_loader = Arc::new(MediaMetadataLoader::start(app));
-        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
-            .and_then(|operation| operation.get())
-            .map_err(|error| {
-                log::error!("无法初始化 Windows 全局系统媒体管理器：{error}");
-            })
+        let runtime = SystemMediaRuntime::initialize(app)
+            .inspect_err(|error| log::error!("无法初始化媒体运行时，等待后续重试：{error}"))
             .ok();
-        let media_activity_tracker = manager.as_ref().and_then(|manager| {
-            MediaActivityTracker::start(manager, app)
-                .map_err(|error| log::error!("无法启动媒体活动跟踪：{error}"))
-                .ok()
-        });
-        let sessions_changed_token = manager.as_ref().and_then(|manager| {
-            subscribe_to_sessions_changed(
-                manager,
-                app,
-                Arc::clone(&current_session_observation),
-                Arc::clone(&media_metadata_loader),
-                media_activity_tracker.clone(),
-            )
-            .ok()
-        });
-        let current_session_changed_token = manager.as_ref().and_then(|manager| {
-            subscribe_to_current_session_changed(
-                manager,
-                app,
-                Arc::clone(&current_session_observation),
-                Arc::clone(&media_metadata_loader),
-                media_activity_tracker.clone(),
-            )
-            .ok()
-        });
+        Self {
+            runtime: Mutex::new(MediaRuntimeSlot {
+                retry_after: runtime
+                    .is_none()
+                    .then(|| Instant::now() + MEDIA_RUNTIME_RETRY_INTERVAL),
+                runtime,
+            }),
+        }
+    }
 
-        if let Some(manager) = &manager {
-            if let Err(error) = bind_current_session(
-                manager,
-                app,
-                &current_session_observation,
-                &media_metadata_loader,
-            ) {
-                log::error!("无法监听初始系统媒体会话：{error}");
+    /// 注销媒体事件并停止后台线程；重复调用保持幂等。
+    pub(crate) fn request_shutdown(&self) {
+        match self.runtime.lock() {
+            Ok(mut slot) => {
+                slot.runtime = None;
+                slot.retry_after = Some(Instant::now() + MEDIA_RUNTIME_RETRY_INTERVAL);
             }
-            if let Some(activity_tracker) = &media_activity_tracker {
-                let current_session = manager.GetCurrentSession().ok();
-                activity_tracker.mark_current_session(current_session.as_ref());
+            Err(_) => log::warn!("应用退出时无法取得媒体运行时状态锁"),
+        }
+    }
+
+    fn ensure_runtime<'a, R: Runtime>(
+        slot: &'a mut MediaRuntimeSlot,
+        app: &AppHandle<R>,
+    ) -> Result<&'a SystemMediaRuntime, String> {
+        if slot.runtime.is_none() {
+            let now = Instant::now();
+            if !media_runtime_retry_is_due(slot.retry_after, now) {
+                return Err("Windows 媒体服务暂时不可用，正在等待自动重试".to_owned());
+            }
+            match SystemMediaRuntime::initialize(app) {
+                Ok(runtime) => {
+                    slot.runtime = Some(runtime);
+                    slot.retry_after = None;
+                }
+                Err(error) => {
+                    slot.retry_after = Some(now + MEDIA_RUNTIME_RETRY_INTERVAL);
+                    return Err(error);
+                }
             }
         }
+        slot.runtime
+            .as_ref()
+            .ok_or_else(|| "媒体运行时尚未初始化".to_owned())
+    }
 
-        Self {
+    /// 在完整运行时上执行操作；运行时缺失时先进行一次事务式重建。
+    fn with_runtime<R: Runtime, T>(
+        &self,
+        app: &AppHandle<R>,
+        operation: impl FnOnce(&SystemMediaRuntime) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut slot = self
+            .runtime
+            .lock()
+            .map_err(|_| "媒体运行时状态锁已损坏".to_owned())?;
+        let result = operation(Self::ensure_runtime(&mut slot, app)?);
+        if result.is_err() {
+            slot.runtime = None;
+            slot.retry_after = Some(Instant::now() + MEDIA_RUNTIME_RETRY_INTERVAL);
+        }
+        result
+    }
+
+    /// 枚举全部媒体会话，并返回 Muse Bar 对每个来源的播放器分类。
+    pub(crate) fn session_identities<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+    ) -> Result<Vec<MediaSessionIdentity>, String> {
+        self.with_runtime(app, |runtime| collect_session_identities(&runtime.manager))
+    }
+
+    /// 返回全部媒体会话当前记录的有效活动时间和原因。
+    pub(crate) fn session_activities<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+    ) -> Result<Vec<MediaSessionActivity>, String> {
+        self.with_runtime(app, |runtime| runtime.media_activity_tracker.activities())
+    }
+
+    /// 将当前会话与后台缓存的元数据组合为统一快照。
+    pub(crate) fn current_media_snapshot<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+    ) -> Result<Option<MediaSnapshot>, String> {
+        self.with_runtime(app, SystemMediaRuntime::current_media_snapshot)
+    }
+
+    /// 根据活动记录重新选择 Bar 实际观察的会话，并在目标变化时重新绑定事件。
+    pub(crate) fn refresh_selected_media_session<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+    ) -> Result<Option<SelectedMediaSession>, String> {
+        self.with_runtime(app, |runtime| runtime.refresh_selected_media_session(app))
+    }
+
+    /// 对 Bar 当前真正观察的会话执行播放、暂停、切歌或进度跳转。
+    pub(crate) fn control_media<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        action: ControlAction,
+    ) -> Result<(), MediaControlError> {
+        let mut slot = self
+            .runtime
+            .lock()
+            .map_err(|_| MediaControlError::windows_api(action, "媒体运行时状态锁已损坏"))?;
+        let runtime = Self::ensure_runtime(&mut slot, app)
+            .map_err(|error| MediaControlError::windows_api(action, error))?;
+        runtime.control_media(action)
+    }
+}
+
+fn media_runtime_retry_is_due(retry_after: Option<Instant>, now: Instant) -> bool {
+    retry_after.map_or(true, |retry_after| now >= retry_after)
+}
+
+impl SystemMediaRuntime {
+    /// 完成管理器、活动跟踪、两个全局事件和当前会话的事务式初始化。
+    fn initialize<R: Runtime>(app: &AppHandle<R>) -> Result<Self, String> {
+        let current_session_observation =
+            Arc::new(Mutex::new(CurrentSessionObservation::default()));
+        let media_metadata_loader = Arc::new(MediaMetadataLoader::start(app)?);
+        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
+            .and_then(|operation| operation.get())
+            .map_err(|error| format!("无法初始化 Windows 全局系统媒体管理器：{error}"))?;
+        let media_activity_tracker = MediaActivityTracker::start(&manager, app)?;
+        let sessions_changed_token = subscribe_to_sessions_changed(
+            &manager,
+            app,
+            Arc::clone(&current_session_observation),
+            Arc::clone(&media_metadata_loader),
+            Some(media_activity_tracker.clone()),
+        )?;
+        let current_session_changed_token = match subscribe_to_current_session_changed(
+            &manager,
+            app,
+            Arc::clone(&current_session_observation),
+            Arc::clone(&media_metadata_loader),
+            Some(media_activity_tracker.clone()),
+        ) {
+            Ok(token) => token,
+            Err(error) => {
+                let _ = manager.RemoveSessionsChanged(sessions_changed_token);
+                return Err(error);
+            }
+        };
+
+        if let Err(error) = bind_current_session(
+            &manager,
+            app,
+            &current_session_observation,
+            &media_metadata_loader,
+        ) {
+            log::warn!("媒体运行时已启动，但初始会话绑定失败，将由后续刷新恢复：{error}");
+        }
+        let current_session = manager.GetCurrentSession().ok();
+        media_activity_tracker.mark_current_session(current_session.as_ref());
+
+        Ok(Self {
             manager,
             sessions_changed_token,
             current_session_changed_token,
             current_session_observation,
             media_metadata_loader,
             media_activity_tracker,
-        }
-    }
-
-    /// 枚举全部媒体会话，并返回 Muse Bar 对每个来源的播放器分类。
-    pub(crate) fn session_identities(&self) -> Result<Vec<MediaSessionIdentity>, String> {
-        let manager = self
-            .manager
-            .as_ref()
-            .ok_or_else(|| "Windows 全局系统媒体管理器尚未初始化".to_owned())?;
-
-        collect_session_identities(manager)
-    }
-
-    /// 返回全部媒体会话当前记录的有效活动时间和原因。
-    pub(crate) fn session_activities(&self) -> Result<Vec<MediaSessionActivity>, String> {
-        self.media_activity_tracker
-            .as_ref()
-            .ok_or_else(|| "媒体活动跟踪器尚未初始化".to_owned())?
-            .activities()
+        })
     }
 
     /// 将当前会话与后台缓存的元数据组合为统一快照。
@@ -389,17 +560,9 @@ impl SystemMediaManager {
         &self,
         app: &AppHandle<R>,
     ) -> Result<Option<SelectedMediaSession>, String> {
-        let manager = self
-            .manager
-            .as_ref()
-            .ok_or_else(|| "Windows 全局系统媒体管理器尚未初始化".to_owned())?;
-        let activity_tracker = self
-            .media_activity_tracker
-            .as_ref()
-            .ok_or_else(|| "媒体活动跟踪器尚未初始化".to_owned())?;
         select_and_bind_media_session(
-            manager,
-            activity_tracker,
+            &self.manager,
+            &self.media_activity_tracker,
             app,
             &self.current_session_observation,
             &self.media_metadata_loader,
@@ -425,20 +588,20 @@ impl SystemMediaManager {
     }
 }
 
-impl Drop for SystemMediaManager {
+impl Drop for SystemMediaRuntime {
     /// 应用退出时注销 WinRT 事件，避免管理器继续持有已无用途的回调。
     fn drop(&mut self) {
-        if let Some(manager) = &self.manager {
-            if let Some(token) = self.sessions_changed_token {
-                if let Err(error) = manager.RemoveSessionsChanged(token) {
-                    log::warn!("无法注销系统媒体会话列表监听：{error}");
-                }
-            }
-            if let Some(token) = self.current_session_changed_token {
-                if let Err(error) = manager.RemoveCurrentSessionChanged(token) {
-                    log::warn!("无法注销 Windows 当前媒体会话监听：{error}");
-                }
-            }
+        if let Err(error) = self
+            .manager
+            .RemoveSessionsChanged(self.sessions_changed_token)
+        {
+            log::warn!("无法注销系统媒体会话列表监听：{error}");
+        }
+        if let Err(error) = self
+            .manager
+            .RemoveCurrentSessionChanged(self.current_session_changed_token)
+        {
+            log::warn!("无法注销 Windows 当前媒体会话监听：{error}");
         }
 
         if let Ok(mut observation) = self.current_session_observation.lock() {
@@ -862,11 +1025,19 @@ fn read_media_metadata(
 
     Ok(CurrentMediaMetadata {
         source_app_id: source_app_id.to_string(),
-        title: title.to_string(),
-        artist: artist.to_string(),
+        title: bounded_media_text(title.to_string()),
+        artist: bounded_media_text(artist.to_string()),
         artwork_data_url,
         accent_color,
     })
+}
+
+/// 限制播放器提供的标题和歌手长度，避免异常会话把大字符串长期留在活动与快照缓存。
+pub(crate) fn bounded_media_text(value: String) -> String {
+    if value.chars().count() <= MAX_MEDIA_TEXT_CHARS {
+        return value;
+    }
+    value.chars().take(MAX_MEDIA_TEXT_CHARS).collect()
 }
 
 /// 读取一次 SMTC 缩略图流，同时生成 WebView 图片和封面主色。
@@ -913,7 +1084,7 @@ fn read_artwork(thumbnail: &IRandomAccessStreamReference) -> Result<Option<Media
         .unwrap_or_default();
     let content_type = detect_artwork_content_type(&bytes, &reported_content_type);
     // 当前函数运行在专用媒体元数据线程中，图片解码不会阻塞 Tauri 命令或 WebView。
-    let accent_color = extract_dominant_color(&bytes);
+    let accent_color = extract_dominant_color(&bytes)?;
     let encoded = BASE64_STANDARD.encode(&bytes);
 
     Ok(Some(MediaArtwork {
@@ -923,9 +1094,18 @@ fn read_artwork(thumbnail: &IRandomAccessStreamReference) -> Result<Option<Media
 }
 
 /// 从缩小后的封面中选择出现频率高、且在深浅背景上都可辨识的颜色。
-fn extract_dominant_color(bytes: &[u8]) -> Option<String> {
-    let image = image::load_from_memory(bytes)
-        .ok()?
+fn extract_dominant_color(bytes: &[u8]) -> Result<Option<String>, String> {
+    let mut reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| format!("无法识别媒体封面格式：{error}"))?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_ARTWORK_DIMENSION);
+    limits.max_image_height = Some(MAX_ARTWORK_DIMENSION);
+    limits.max_alloc = Some(MAX_ARTWORK_DECODE_BYTES);
+    reader.limits(limits);
+    let image = reader
+        .decode()
+        .map_err(|error| format!("媒体封面损坏或超过解码限制：{error}"))?
         .thumbnail(48, 48)
         .to_rgba8();
     let mut buckets = [ColorBucket::default(); 4096];
@@ -971,10 +1151,10 @@ fn extract_dominant_color(bytes: &[u8]) -> Option<String> {
         }
     }
 
-    best.map(|(_, red, green, blue)| {
+    Ok(best.map(|(_, red, green, blue)| {
         let (red, green, blue) = enhance_color_saturation(red, green, blue);
         format!("#{red:02X}{green:02X}{blue:02X}")
-    })
+    }))
 }
 
 /// 温和提高颜色饱和度并保持最高通道亮度；增强后对比度不足时保留原色。
@@ -1259,7 +1439,12 @@ pub(crate) fn identify_media_player(source_app_id: &str) -> MediaPlayerKind {
 
 #[cfg(test)]
 mod tests {
-    use super::should_retry_media_metadata;
+    use std::time::{Duration, Instant};
+
+    use super::{
+        bounded_media_text, extract_dominant_color, media_runtime_retry_is_due,
+        should_retry_media_metadata, MAX_MEDIA_TEXT_CHARS,
+    };
 
     #[test]
     fn retry_metadata_should_be_true_when_bound_session_cache_is_empty() {
@@ -1279,5 +1464,37 @@ mod tests {
     #[test]
     fn retry_metadata_should_be_false_when_session_requires_rebinding() {
         assert!(!should_retry_media_metadata(Some(42), Some(7), false));
+    }
+
+    #[test]
+    fn media_runtime_retry_should_wait_until_backoff_expires() {
+        let now = Instant::now();
+
+        assert!(!media_runtime_retry_is_due(
+            Some(now + Duration::from_secs(1)),
+            now
+        ));
+    }
+
+    #[test]
+    fn media_runtime_retry_should_resume_after_backoff_expires() {
+        let now = Instant::now();
+
+        assert!(media_runtime_retry_is_due(Some(now), now));
+    }
+
+    #[test]
+    fn artwork_decode_should_reject_corrupted_bytes() {
+        assert!(extract_dominant_color(b"not-an-image").is_err());
+    }
+
+    #[test]
+    fn media_text_should_be_truncated_on_unicode_character_boundary() {
+        let input = "歌".repeat(MAX_MEDIA_TEXT_CHARS + 1);
+
+        assert_eq!(
+            bounded_media_text(input).chars().count(),
+            MAX_MEDIA_TEXT_CHARS
+        );
     }
 }

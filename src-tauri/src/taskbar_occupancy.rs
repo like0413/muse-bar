@@ -215,6 +215,13 @@ fn positioning_regions_cache() -> &'static Mutex<Option<CachedPositioningRegions
     LAST_POSITIONING_REGIONS.get_or_init(|| Mutex::new(None))
 }
 
+/// Explorer 重建或应用退出时丢弃旧 XAML 布局，避免句柄复用后命中过期缓存。
+pub(crate) fn invalidate_positioning_regions_cache() {
+    if let Ok(mut cached) = positioning_regions_cache().lock() {
+        *cached = None;
+    }
+}
+
 /// 按简化规则计算 Bar 的屏幕横坐标：左右只跟随对应边缘组件。
 pub fn resolve_bar_screen_x(
     position: TaskbarPosition,

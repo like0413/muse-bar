@@ -9,6 +9,9 @@ mod autostart;
 /// Bar 内容宽度到原生任务栏窗口尺寸的应用编排。
 mod bar_layout;
 
+/// 后台线程统一的有界退出等待。
+mod background_worker;
+
 /// 任务栏 Child 窗口的样式、挂载与位置维护。
 mod child_host;
 
@@ -84,7 +87,8 @@ pub fn run() {
 
             app_lifecycle::create_tray(app)?;
 
-            explorer_monitor::start(app.handle().clone())?;
+            let explorer_monitor = explorer_monitor::start(app.handle().clone())?;
+            app.manage(explorer_monitor);
 
             Ok(())
         })
@@ -111,7 +115,13 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|_app, event| {
+    app.run(|app, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            app.state::<system_media::SystemMediaManager>()
+                .request_shutdown();
+            app.state::<explorer_monitor::ExplorerMonitor>()
+                .request_shutdown();
+        }
         if let tauri::RunEvent::ExitRequested {
             code: None, api, ..
         } = event

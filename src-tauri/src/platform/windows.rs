@@ -41,10 +41,11 @@ pub use ::windows::Win32::UI::Accessibility::{
 pub use ::windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumChildWindows, FindWindowExW,
     FindWindowW, GetClassNameW, GetMessageW, GetParent, GetWindowLongPtrW, GetWindowRect,
-    GetWindowThreadProcessId, IsWindow, IsWindowVisible, PostQuitMessage, RegisterClassW,
-    RegisterWindowMessageW, SetLayeredWindowAttributes, SetParent, SetWindowLongPtrW, SetWindowPos,
-    ShowWindow, TranslateMessage, GWL_EXSTYLE, GWL_STYLE, HWND_TOP, LWA_ALPHA,
-    MONITORINFOF_PRIMARY, MSG, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
-    SW_HIDE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN,
-    WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT, WS_POPUP,
+    GetWindowThreadProcessId, IsWindow, IsWindowVisible, PostMessageW, PostQuitMessage,
+    RegisterClassW, RegisterWindowMessageW, SetLayeredWindowAttributes, SetParent,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, GWL_EXSTYLE, GWL_STYLE,
+    HWND_TOP, LWA_ALPHA, MONITORINFOF_PRIMARY, MSG, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER,
+    SWP_SHOWWINDOW, SW_HIDE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_DESTROY, WNDCLASSW,
+    WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT,
+    WS_POPUP,
 };
