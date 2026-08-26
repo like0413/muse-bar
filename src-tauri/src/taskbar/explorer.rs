@@ -16,7 +16,6 @@ use tauri::{
 
 use crate::{
     background_worker::{join_with_timeout, WORKER_SHUTDOWN_TIMEOUT},
-    child_host,
     platform::windows::{
         w, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetModuleHandleW,
         PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, TranslateMessage,
@@ -25,8 +24,9 @@ use crate::{
     },
     settings::TaskbarPosition,
     state::AppState,
-    taskbar, taskbar_occupancy,
 };
+
+use super::{host, occupancy, system};
 
 const RECOVERY_ATTEMPTS: usize = 30;
 const RECOVERY_INTERVAL: Duration = Duration::from_millis(100);
@@ -52,7 +52,7 @@ impl ExplorerMonitor {
             return;
         }
 
-        taskbar_occupancy::invalidate_positioning_regions_cache();
+        occupancy::invalidate_positioning_regions_cache();
         let _ = TASKBAR_CREATED_SENDER
             .get()
             .and_then(|sender| sender.try_send(()).ok());
@@ -179,7 +179,7 @@ fn run_recovery_worker(app: AppHandle, receiver: Receiver<()>, shutdown: Arc<Ato
     while !shutdown.load(Ordering::Acquire) {
         match receiver.recv_timeout(RECOVERY_INTERVAL) {
             Ok(()) => {
-                taskbar_occupancy::invalidate_positioning_regions_cache();
+                occupancy::invalidate_positioning_regions_cache();
                 if let Err(error) = wait_for_bar_recovery(&app, &shutdown) {
                     if !shutdown.load(Ordering::Acquire) {
                         log::error!("Explorer 重启后无法恢复 Bar：{error}");
@@ -223,12 +223,12 @@ fn bar_requires_recovery(app: &AppHandle) -> Result<bool, String> {
     let Some(bar_window) = app.get_window(BAR_WINDOW_LABEL) else {
         return Ok(true);
     };
-    if !child_host::is_window_alive(&bar_window) {
+    if !host::is_window_alive(&bar_window) {
         return Ok(true);
     }
     let settings = app.state::<AppState>().settings()?;
-    let taskbar = taskbar::find_taskbar(&settings.target_monitor)?;
-    Ok(!child_host::is_attached_to_taskbar(&bar_window, &taskbar))
+    let taskbar = system::find_taskbar(&settings.target_monitor)?;
+    Ok(!host::is_attached_to_taskbar(&bar_window, &taskbar))
 }
 
 fn recovery_request_is_due(last_request: Option<Instant>, now: Instant) -> bool {
@@ -257,19 +257,16 @@ fn synchronize_lyrics_taskbar_layout(
     let bar_webview = app
         .get_webview(BAR_WINDOW_LABEL)
         .ok_or_else(|| "Bar WebView 尚未创建".to_owned())?;
-    let taskbar = taskbar::find_taskbar(&settings.target_monitor)?;
-    if !child_host::is_attached_to_taskbar(&bar_window, &taskbar) {
+    let taskbar = system::find_taskbar(&settings.target_monitor)?;
+    if !host::is_attached_to_taskbar(&bar_window, &taskbar) {
         return Err("Bar 尚未挂载到目标任务栏".to_owned());
     }
 
-    let taskbar_rect = taskbar::read_taskbar_rect(&taskbar)?;
-    let taskbar_dpi = taskbar::read_taskbar_dpi(&taskbar)?;
-    let positioning_regions = taskbar_occupancy::read_positioning_regions(&taskbar, &taskbar_rect);
-    let positioning_span = taskbar_occupancy::resolve_available_span(
-        settings.position,
-        &taskbar_rect,
-        &positioning_regions,
-    );
+    let taskbar_rect = system::read_taskbar_rect(&taskbar)?;
+    let taskbar_dpi = system::read_taskbar_dpi(&taskbar)?;
+    let positioning_regions = occupancy::read_positioning_regions(&taskbar, &taskbar_rect);
+    let positioning_span =
+        occupancy::resolve_available_span(settings.position, &taskbar_rect, &positioning_regions);
     let current_layout = LyricsTaskbarLayout {
         taskbar_handle: taskbar.handle_value(),
         taskbar_dpi: taskbar_dpi.dpi(),
@@ -295,7 +292,7 @@ fn synchronize_lyrics_taskbar_layout(
         .max(1.0) as u32;
     state.report_bar_content_width(1.0, Some(logical_width))?;
     let (animation_revision, latest_animation_revision) = state.begin_bar_width_animation();
-    child_host::animate_window_width(child_host::WindowWidthAnimationRequest {
+    host::animate_window_width(host::WindowWidthAnimationRequest {
         bar_window,
         bar_webview,
         taskbar: &taskbar,
@@ -341,9 +338,9 @@ fn wait_for_bar_recovery(app: &AppHandle, shutdown: &AtomicBool) -> Result<(), S
 /// 真正的创建工作派发到事件循环，避免 WebView2 同步初始化造成主线程死锁。
 fn recover_bar_once(app: &AppHandle) -> Result<(), String> {
     let settings = app.state::<AppState>().settings()?;
-    let taskbar = taskbar::find_taskbar(&settings.target_monitor)?;
-    let taskbar_rect = taskbar::read_taskbar_rect(&taskbar)?;
-    let taskbar_dpi = taskbar::read_taskbar_dpi(&taskbar)?;
+    let taskbar = system::find_taskbar(&settings.target_monitor)?;
+    let taskbar_rect = system::read_taskbar_rect(&taskbar)?;
+    let taskbar_dpi = system::read_taskbar_dpi(&taskbar)?;
 
     let config = app
         .config()
@@ -354,7 +351,7 @@ fn recover_bar_once(app: &AppHandle) -> Result<(), String> {
         .ok_or_else(|| "配置中缺少 Bar 窗口".to_owned())?;
 
     let (bar_window, bar_recreated) = match app.get_window(BAR_WINDOW_LABEL) {
-        Some(window) if child_host::is_window_alive(&window) => (window, false),
+        Some(window) if host::is_window_alive(&window) => (window, false),
         Some(window) => {
             // Explorer 会销毁其 Child。Tauri 的窗口注册表可能稍晚一拍才移除旧标签，
             // 因此先请求清理并让外层重试，避免用同一标签创建出重复窗口。
@@ -378,12 +375,12 @@ fn recover_bar_once(app: &AppHandle) -> Result<(), String> {
     };
 
     let should_show = app.state::<AppState>().should_show_bar();
-    let host_size = match child_host::attach_window(
+    let host_size = match host::attach_window(
         &bar_window,
         &taskbar,
         &taskbar_rect,
         &taskbar_dpi,
-        child_host::AttachWindowOptions {
+        host::AttachWindowOptions {
             position: settings.position,
             manual_offset: settings.manual_offset,
             should_show,
@@ -425,7 +422,7 @@ fn recover_bar_once(app: &AppHandle) -> Result<(), String> {
 
     // 用户临时隐藏和无媒体状态都会跨 Explorer 重建保留，避免恢复流程错误显示 Bar。
     if !app.state::<AppState>().should_show_bar() {
-        child_host::hide_window(&bar_window)?;
+        host::hide_window(&bar_window)?;
     }
 
     Ok(())

@@ -1,4 +1,4 @@
-use crate::media_model::MediaPlayerKind;
+use super::model::MediaPlayerKind;
 
 /// 媒体选择策略所需的最小输入，不携带 WinRT 会话或事件订阅状态。
 #[derive(Debug, Clone, Copy)]

@@ -23,9 +23,10 @@ use windows::{
 };
 
 use crate::background_worker::{join_with_timeout, WORKER_SHUTDOWN_TIMEOUT};
-use crate::{
-    media_model::{bounded_media_text, identify_media_player, MediaPlayerKind},
-    media_selection::MediaSelectionCandidate,
+
+use super::{
+    model::{bounded_media_text, identify_media_player, MediaPlayerKind},
+    selection::MediaSelectionCandidate,
 };
 
 const MEDIA_SESSION_ACTIVITIES_CHANGED_EVENT: &str = "media-session-activities-changed";
@@ -733,7 +734,7 @@ fn activity_snapshots(state: &ActivityState) -> Vec<MediaSessionActivity> {
 
 /// 纯粹依据活动记录选择四家播放器，不读取 WinRT 或修改任何状态。
 fn select_preferred_session_key(state: &ActivityState) -> Option<u64> {
-    crate::media_selection::select_preferred_session_key(state.records.iter().map(
+    super::selection::select_preferred_session_key(state.records.iter().map(
         |(session_key, record)| MediaSelectionCandidate {
             session_key: *session_key,
             player_kind: record.player_kind,

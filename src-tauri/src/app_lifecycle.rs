@@ -140,9 +140,9 @@ pub(crate) fn synchronize_bar_visibility<R: Runtime>(app: &AppHandle<R>) -> Resu
         // Child 窗口隐藏后不能只调用 Tauri 的 show：那样不会重新校准窗口样式、
         // 父子关系和任务栏客户区位置，WebView 看似恢复却可能失去鼠标命中。
         // 统一复用 Explorer 恢复通道，由 Child 宿主完成挂载并原生显示窗口。
-        crate::explorer_monitor::request_recovery()?;
+        crate::taskbar::request_recovery()?;
     } else if let Some(window) = app.get_window(BAR_WINDOW_LABEL) {
-        crate::child_host::hide_window(&window)?;
+        crate::taskbar::hide_window(&window)?;
     }
 
     Ok(())

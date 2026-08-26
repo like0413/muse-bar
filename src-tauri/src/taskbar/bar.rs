@@ -1,10 +1,8 @@
 use tauri::{AppHandle, Manager};
 
-use crate::{
-    child_host,
-    state::{AppState, BarWidthMeasurement},
-    taskbar,
-};
+use crate::state::{AppState, BarWidthMeasurement};
+
+use super::{host, occupancy, system};
 
 /// 按内容策略计算并应用原生 Bar 宽度。
 pub(crate) fn apply_content_width(
@@ -19,15 +17,14 @@ pub(crate) fn apply_content_width(
         .get_webview("bar")
         .ok_or_else(|| "无法调整宽度：Bar WebView 不存在".to_owned())?;
     let settings = state.settings()?;
-    let taskbar = taskbar::find_taskbar(&settings.target_monitor)?;
-    let taskbar_rect = taskbar::read_taskbar_rect(&taskbar)?;
-    let taskbar_dpi = taskbar::read_taskbar_dpi(&taskbar)?;
+    let taskbar = system::find_taskbar(&settings.target_monitor)?;
+    let taskbar_rect = system::read_taskbar_rect(&taskbar)?;
+    let taskbar_dpi = system::read_taskbar_dpi(&taskbar)?;
     let available_span = if settings.lyrics_enabled {
         // 只读取 Explorer 自己的 XAML 宿主。它与 Muse Bar 是兄弟窗口，
         // 因此同步命令不会反向进入正在等待返回的 Bar WebView。
-        let occupied_regions =
-            crate::taskbar_occupancy::read_positioning_regions(&taskbar, &taskbar_rect);
-        Some(crate::taskbar_occupancy::resolve_available_span(
+        let occupied_regions = occupancy::read_positioning_regions(&taskbar, &taskbar_rect);
+        Some(occupancy::resolve_available_span(
             settings.position,
             &taskbar_rect,
             &occupied_regions,
@@ -42,9 +39,9 @@ pub(crate) fn apply_content_width(
             .max(1.0) as u32
     });
     let measurement = state.report_bar_content_width(natural_width, available_logical_width)?;
-    if !child_host::is_attached_to_taskbar(&bar_window, &taskbar) {
+    if !host::is_attached_to_taskbar(&bar_window, &taskbar) {
         // 目标显示器刚改变时，先交给恢复线程完成重新挂载，避免在旧任务栏坐标系中移动窗口。
-        crate::explorer_monitor::request_recovery()?;
+        super::request_recovery()?;
         return Ok(measurement.deferred());
     }
     let target_physical_width = match available_span {
@@ -57,7 +54,7 @@ pub(crate) fn apply_content_width(
     };
     let (animation_revision, latest_animation_revision) = state.begin_bar_width_animation();
 
-    child_host::animate_window_width(child_host::WindowWidthAnimationRequest {
+    host::animate_window_width(host::WindowWidthAnimationRequest {
         bar_window,
         bar_webview,
         taskbar: &taskbar,

@@ -15,5 +15,5 @@ pub fn update_settings(
     state: State<'_, AppState>,
     settings: AppSettings,
 ) -> Result<AppSettings, String> {
-    crate::settings_update::apply(&app, &state, settings)
+    crate::settings::apply_update(&app, &state, settings)
 }

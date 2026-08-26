@@ -12,6 +12,10 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager, Runtime};
 use thiserror::Error;
 
+mod update;
+
+pub(crate) use update::apply as apply_update;
+
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 12;
 const MAXIMUM_CORRUPTED_SETTINGS_BACKUPS: usize = 3;

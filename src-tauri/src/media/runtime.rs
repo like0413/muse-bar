@@ -7,14 +7,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{
-    background_worker::{join_with_timeout, WORKER_SHUTDOWN_TIMEOUT},
-    media_activity::{
-        session_key, MediaActivityTracker, MediaSessionActivity, SelectedMediaSession,
-    },
-    media_artwork::{read_artwork, read_windows_accent_color},
-    media_control::{execute_control_action, ControlAction, MediaControlError},
-    media_model::{
+use crate::background_worker::{join_with_timeout, WORKER_SHUTDOWN_TIMEOUT};
+
+use super::{
+    activity::{session_key, MediaActivityTracker, MediaSessionActivity, SelectedMediaSession},
+    artwork::{read_artwork, read_windows_accent_color},
+    control::{execute_control_action, ControlAction, MediaControlError},
+    model::{
         bounded_media_text, identify_media_player, CurrentMediaMetadata,
         CurrentPlaybackCapabilities, CurrentPlaybackStatus, CurrentTimeline, MediaSessionIdentity,
         MediaSnapshot,

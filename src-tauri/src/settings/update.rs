@@ -1,6 +1,8 @@
 use tauri::{AppHandle, Emitter};
 
-use crate::{settings::AppSettings, state::AppState};
+use crate::state::AppState;
+
+use super::AppSettings;
 
 const SETTINGS_CHANGED_EVENT: &str = "settings-changed";
 
@@ -39,7 +41,7 @@ pub(crate) fn apply(
     if target_monitor_changed {
         // 只有跨显示器时才需要更换原生 Child 的父任务栏。同一任务栏中的位置和
         // 偏移由 Bar 收到设置事件后直接调整，避免恢复流程与宽度上报并发移动窗口。
-        if let Err(error) = crate::explorer_monitor::request_recovery() {
+        if let Err(error) = crate::taskbar::request_recovery() {
             log::warn!("设置已保存，但无法立即更新 Bar 任务栏位置：{error}");
         }
     }

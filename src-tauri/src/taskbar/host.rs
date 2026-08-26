@@ -17,8 +17,9 @@ use crate::platform::windows::{
     WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
-use crate::taskbar::{TaskbarDpi, TaskbarIdentity, TaskbarRect};
-use crate::{settings::TaskbarPosition, taskbar_occupancy};
+use crate::settings::TaskbarPosition;
+
+use super::{occupancy, TaskbarDpi, TaskbarIdentity, TaskbarRect};
 
 const STABILIZATION_DELAYS: [Duration; 3] = [
     Duration::from_millis(100),
@@ -186,14 +187,8 @@ pub(crate) fn animate_window_width<R: Runtime>(
     let base_screen_x = match preferred_screen_x {
         Some(screen_x) => screen_x,
         None => {
-            let occupied_regions =
-                taskbar_occupancy::read_positioning_regions(taskbar, taskbar_rect);
-            taskbar_occupancy::resolve_bar_screen_x(
-                position,
-                taskbar_rect,
-                &occupied_regions,
-                target_width,
-            )
+            let occupied_regions = occupancy::read_positioning_regions(taskbar, taskbar_rect);
+            occupancy::resolve_bar_screen_x(position, taskbar_rect, &occupied_regions, target_width)
         }
     };
     let target_screen_x = apply_manual_offset(
@@ -364,13 +359,9 @@ fn attach_to_taskbar<R: Runtime>(
         ));
     }
 
-    let occupied_regions = taskbar_occupancy::read_positioning_regions(taskbar, taskbar_rect);
-    let base_screen_x = taskbar_occupancy::resolve_bar_screen_x(
-        position,
-        taskbar_rect,
-        &occupied_regions,
-        bar_width,
-    );
+    let occupied_regions = occupancy::read_positioning_regions(taskbar, taskbar_rect);
+    let base_screen_x =
+        occupancy::resolve_bar_screen_x(position, taskbar_rect, &occupied_regions, bar_width);
     let screen_x = apply_manual_offset(
         base_screen_x,
         manual_offset,

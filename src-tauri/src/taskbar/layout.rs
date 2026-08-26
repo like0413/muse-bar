@@ -1,4 +1,6 @@
-use crate::{settings::TaskbarPosition, taskbar::TaskbarRect};
+use crate::settings::TaskbarPosition;
+
+use super::TaskbarRect;
 
 const EDGE_COMPONENT_ZONE_DIVISOR: i32 = 3;
 

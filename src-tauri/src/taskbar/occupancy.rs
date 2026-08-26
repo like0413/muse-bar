@@ -3,19 +3,20 @@ use std::{
     thread,
 };
 
-use crate::{
-    platform::windows::{
-        CUIAutomation, CoCreateInstance, CoInitializeEx, CoUninitialize, EnumChildWindows,
-        GetClassNameW, GetWindowRect, GetWindowThreadProcessId, IUIAutomation, IsWindowVisible,
-        TreeScope_Descendants, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, HWND, LPARAM, RECT,
-    },
-    taskbar::{TaskbarIdentity, TaskbarRect},
-    taskbar_layout::{is_central_taskbar_button, occupied_rect_from_taskbar},
+use crate::platform::windows::{
+    CUIAutomation, CoCreateInstance, CoInitializeEx, CoUninitialize, EnumChildWindows,
+    GetClassNameW, GetWindowRect, GetWindowThreadProcessId, IUIAutomation, IsWindowVisible,
+    TreeScope_Descendants, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, HWND, LPARAM, RECT,
+};
+
+use super::{
+    layout::{is_central_taskbar_button, occupied_rect_from_taskbar},
+    TaskbarIdentity, TaskbarRect,
 };
 
 const XAML_HOST_CLASS_NAME: &str = "Windows.UI.Composition.DesktopWindowContentBridge";
 
-pub use crate::taskbar_layout::{
+pub use super::layout::{
     resolve_available_span, resolve_bar_screen_x, OccupiedRect, OccupiedRegion,
 };
 

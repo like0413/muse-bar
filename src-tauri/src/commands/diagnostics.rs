@@ -152,7 +152,7 @@ impl LogicalTaskbarRectDiagnostic {
 
 impl TaskbarOccupiedRegionDiagnostic {
     /// 将任务栏占用领域对象转换为前端可直接检查的物理像素数据。
-    fn from_occupied_region(region: &crate::taskbar_occupancy::OccupiedRegion) -> Self {
+    fn from_occupied_region(region: &crate::taskbar::OccupiedRegion) -> Self {
         let rect = region.rect();
         Self {
             name: region.name().to_owned(),
@@ -199,7 +199,7 @@ pub async fn get_taskbar_occupied_regions() -> Result<TaskbarOccupancyDiagnostic
     tauri::async_runtime::spawn_blocking(|| {
         let taskbar = crate::taskbar::find_main_taskbar()?;
         let taskbar_rect = crate::taskbar::read_taskbar_rect(&taskbar)?;
-        let occupancy = crate::taskbar_occupancy::read_occupied_regions(&taskbar, &taskbar_rect);
+        let occupancy = crate::taskbar::read_occupied_regions(&taskbar, &taskbar_rect);
 
         Ok(TaskbarOccupancyDiagnostic {
             source: occupancy.source().as_str().to_owned(),

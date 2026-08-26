@@ -106,19 +106,30 @@ src/
 
 src-tauri/src/
   commands/                       Tauri command 薄入口
-  media_model.rs                  可序列化媒体 DTO 与播放器识别策略
-  media_selection.rs              只依赖普通数据的会话选择策略
-  media_artwork.rs                封面读取、格式识别与颜色提取
-  system_media.rs                 WinRT 媒体运行时与事件协调
-  taskbar_layout.rs               只依赖矩形数据的布局决策
-  taskbar_occupancy.rs            UI Automation / Win32 任务栏采集
-  settings.rs                     AppSettings 与 JSON 持久化
+  media/                          媒体领域 facade
+    model.rs                      可序列化 DTO 与播放器识别策略
+    selection.rs                  只依赖普通数据的会话选择策略
+    artwork.rs                    封面读取、格式识别与颜色提取
+    activity.rs                   活动跟踪与选择候选采集
+    control.rs                    当前会话控制
+    runtime.rs                    WinRT 媒体运行时与事件协调
+  taskbar/                        任务栏领域 facade
+    system.rs                     任务栏发现与运行时信息
+    layout.rs                     只依赖矩形数据的布局决策
+    occupancy.rs                  UI Automation / Win32 任务栏采集
+    host.rs                       Child 窗口挂载和位置维护
+    explorer.rs                   Explorer 重建监控与恢复
+    bar.rs                        内容宽度到原生窗口尺寸的编排
+  settings/                       设置领域 facade
+    mod.rs                        AppSettings、归一化与 JSON 持久化
+    update.rs                     启动项、保存和事件广播事务
   state.rs                        AppState 与跨线程共享状态
 
 docs/              架构、基线与兼容性记录
 ```
 
-模块只公开调用方需要的最小接口。`media_selection` 和 `taskbar_layout` 不接收 WinRT、`HWND`
+三个领域通过各自的 `mod.rs` 只重导出调用方需要的最小接口，内部实现模块默认私有。
+`media::selection` 和 `taskbar::layout` 不接收 WinRT、`HWND`
 或 Tauri handle；Windows 采集结果先转换为普通 DTO 或矩形，再交给策略模块。前端只有
 `src/lib/*-api.ts` 可以导入 Tauri 的 `invoke`，Vue 组件通过 Store 或 typed API 使用能力。
 

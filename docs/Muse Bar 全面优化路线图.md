@@ -632,12 +632,13 @@ Explorer 连续终止、真实自动隐藏切换、多显示器 DPI 热变更、
 
 | 原边界                          | 已提取职责                                                                                  | 保留职责                                |
 | ------------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------- |
-| `system_media.rs`               | `media_model` 的 DTO/播放器识别，`media_artwork` 的封面与颜色，`media_selection` 的选择策略 | WinRT 运行时、订阅、会话绑定和事件协调  |
-| `media_activity.rs`             | 选择优先级只接收 `MediaSelectionCandidate`                                                  | Windows 活动采集、记录和事件发布        |
-| `taskbar_occupancy.rs`          | `taskbar_layout` 的矩形与 Bar 布局决策                                                      | UI Automation、Win32 回退和可信布局缓存 |
+| `media/runtime.rs`              | `media/model` 的 DTO/播放器识别，`media/artwork` 的封面与颜色，`media/selection` 的选择策略 | WinRT 运行时、订阅、会话绑定和事件协调  |
+| `media/activity.rs`             | 选择优先级只接收 `MediaSelectionCandidate`                                                  | Windows 活动采集、记录和事件发布        |
+| `taskbar/occupancy.rs`          | `taskbar/layout` 的矩形与 Bar 布局决策                                                      | UI Automation、Win32 回退和可信布局缓存 |
 | `AppearanceSettingsSection.vue` | 5 张设置卡和 1 个纯预览组件                                                                 | Store 连接与 `SettingsPatch` 转发       |
 
-拆分后 `system_media.rs` 从 1438 行降为 1074 行，`taskbar_occupancy.rs` 从 658 行降为
+拆分后 `media/runtime.rs` 从原 `system_media.rs` 的 1438 行降为 1074 行，
+`taskbar/occupancy.rs` 从原 `taskbar_occupancy.rs` 的 658 行降为
 409 行，外观入口组件从 496 行降为 52 行。行数只是拆分结果，边界依据分别是系统采集、策略决策、
 数据契约和 UI 展示的不同变化原因。
 
@@ -651,9 +652,9 @@ Explorer 连续终止、真实自动隐藏切换、多显示器 DPI 热变更、
 
 - 播放器识别从运行时流程提取为 `PLAYER_IDENTIFICATION_RULES` 策略表。增加播放器时集中增加枚举
   映射和一条识别规则，不修改 WinRT 会话协调流程。
-- 播放/暂停优先级从活动跟踪器提取到 `media_selection`，策略只消费普通候选 DTO；活动来源变化不
+- 播放/暂停优先级从活动跟踪器提取到 `media::selection`，策略只消费普通候选 DTO；活动来源变化不
   影响选择算法，选择规则变化也不触碰事件订阅。
-- 任务栏中央按钮识别、可用区域和 Bar 横坐标统一位于 `taskbar_layout`；更换采集来源时仍可复用
+- 任务栏中央按钮识别、可用区域和 Bar 横坐标统一位于 `taskbar::layout`；更换采集来源时仍可复用
   相同布局策略。
 - 设置迁移保持 `Conditional`：当前不存在多个真实迁移步骤，普通新增字段仍由 `serde(default)`
   处理。只有出现第二个不兼容结构迁移时才建立按版本顺序执行的迁移表。
@@ -690,9 +691,9 @@ Rust Command 的 18 个注册名和按窗口 capability 未变化，继续沿用
 
 状态：`Confirmed`，已完成到当前需求需要的程度。
 
-- `media_selection` 依赖 `MediaSelectionCandidate` 和 `MediaPlayerKind`，不依赖 WinRT session。
-- `taskbar_layout` 依赖项目普通矩形、任务栏矩形和位置枚举，不依赖 `HWND`、UI Automation 或 COM。
-- `media_model` 集中 Rust 到 TypeScript 的可序列化媒体 DTO，不引用 Tauri handle 或 Windows 类型。
+- `media::selection` 依赖 `MediaSelectionCandidate` 和 `MediaPlayerKind`，不依赖 WinRT session。
+- `taskbar::layout` 依赖项目普通矩形、任务栏矩形和位置枚举，不依赖 `HWND`、UI Automation 或 COM。
+- `media::model` 集中 Rust 到 TypeScript 的可序列化媒体 DTO，不引用 Tauri handle 或 Windows 类型。
 - Windows adapter/采集模块负责把系统对象转换为普通数据；Command 继续只转发到应用逻辑。
 
 项目当前没有数据库、远程服务或多后端实现，因此不引入 repository/service trait、`Box<dyn Trait>`
@@ -717,8 +718,10 @@ plain DTO / selection / layout policy <- coordinator or adapter
 - `src/pages/**` 没有直接导入 `invoke`；IPC 调用集中在 `src/lib/*-api.ts`。
 - 旧 `media-api.ts` 已删除且没有残留引用。
 - 外观设置只有连接容器导入 Settings Store，6 个子组件均使用 typed props/emits。
-- `media_model`、`media_selection` 和 `taskbar_layout` 不含 WinRT、COM、`HWND` 或 Tauri handle。
+- `media::model`、`media::selection` 和 `taskbar::layout` 不含 WinRT、COM、`HWND` 或 Tauri handle。
 - Command 注册、事件常量和 capability 文件没有因本章拆分变化。
+- Rust 实现已按 `media/`、`taskbar/`、`settings/` 三个领域目录组织；各 `mod.rs` 作为 facade，
+  内部模块默认私有，并通过 `pub(crate) use` 暴露最小跨域接口。
 
 ## 本章验收
 

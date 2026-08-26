@@ -9,5 +9,5 @@ pub fn report_bar_content_width(
     state: State<'_, AppState>,
     natural_width: f64,
 ) -> Result<BarWidthMeasurement, String> {
-    crate::bar_layout::apply_content_width(&app, &state, natural_width)
+    crate::taskbar::apply_content_width(&app, &state, natural_width)
 }
