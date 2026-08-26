@@ -14,7 +14,8 @@
     "prepare": "vp config",
     "rust:format": "cargo fmt --manifest-path src-tauri/Cargo.toml",
     "rust:check": "cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings",
-    "rust:fix": "cargo clippy --manifest-path src-tauri/Cargo.toml --fix --workspace --all-targets --allow-dirty --allow-staged"
+    "rust:fix": "cargo clippy --manifest-path src-tauri/Cargo.toml --fix --workspace --all-targets --allow-dirty --allow-staged",
+    "release": "vp exec node scripts/release.mjs"
   },
   "dependencies": {
     "@intlify/unplugin-vue-i18n": "^11.2.5",
