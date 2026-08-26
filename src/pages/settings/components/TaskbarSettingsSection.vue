@@ -45,8 +45,7 @@ const MAXIMUM_WIDTH_SLIDER_MAXIMUM = 520
 const WIDTH_SLIDER_STEP = 4
 
 const settingsStore = useSettingsStore()
-const { settings, isSavingSettings, taskbarMonitors, taskbarMonitorError } =
-  storeToRefs(settingsStore)
+const { settings, taskbarMonitors, taskbarMonitorError } = storeToRefs(settingsStore)
 const maxWidthDraft = shallowRef<number[]>([])
 const manualOffsetDraft = shallowRef('0')
 
@@ -162,7 +161,7 @@ watch(
             <FieldLabel>目标显示器</FieldLabel>
             <Select
               :model-value="targetMonitorSelection"
-              :disabled="isSavingSettings || !settings || taskbarMonitors.length === 0"
+              :disabled="!settings || taskbarMonitors.length === 0"
               @update:model-value="handleTargetMonitorChange"
             >
               <SelectTrigger class="w-full">
@@ -188,7 +187,7 @@ watch(
             <ToggleGroup
               type="single"
               variant="outline"
-              :disabled="isSavingSettings || !settings"
+              :disabled="!settings"
               :model-value="currentPosition"
               @update:model-value="handlePositionChange"
             >
@@ -217,7 +216,7 @@ watch(
               :min="MAXIMUM_WIDTH_SLIDER_MINIMUM"
               :max="MAXIMUM_WIDTH_SLIDER_MAXIMUM"
               :step="WIDTH_SLIDER_STEP"
-              :disabled="isSavingSettings || !settings"
+              :disabled="!settings"
               @update:model-value="handleMaximumWidthDraftChange"
               @value-commit="commitMaximumWidth"
             />
@@ -241,7 +240,7 @@ watch(
               :model-value="manualOffsetDraft"
               :min="-200"
               :max="200"
-              :disabled="isSavingSettings || !settings"
+              :disabled="!settings"
               @update:model-value="handleManualOffsetDraftChange"
               @blur="commitManualOffset"
               @keydown.enter="commitManualOffset"
@@ -269,7 +268,7 @@ watch(
             </FieldContent>
             <Switch
               :model-value="lyricsEnabled"
-              :disabled="isSavingSettings || !settings"
+              :disabled="!settings"
               aria-label="显示歌词"
               @update:model-value="handleLyricsEnabledChange"
             />
@@ -280,7 +279,7 @@ watch(
               type="single"
               variant="outline"
               :model-value="currentLyricsAlignment"
-              :disabled="isSavingSettings || !settings || !lyricsEnabled"
+              :disabled="!settings || !lyricsEnabled"
               @update:model-value="handleLyricsAlignmentChange"
             >
               <ToggleGroupItem

@@ -242,7 +242,7 @@ pub(crate) struct SystemMediaManager {
 }
 
 struct MediaRuntimeSlot {
-    runtime: Option<SystemMediaRuntime>,
+    runtime: Option<Arc<SystemMediaRuntime>>,
     retry_after: Option<Instant>,
 }
 
@@ -261,7 +261,8 @@ impl SystemMediaManager {
     pub(crate) fn initialize<R: Runtime>(app: &AppHandle<R>) -> Self {
         let runtime = SystemMediaRuntime::initialize(app)
             .inspect_err(|error| log::error!("无法初始化媒体运行时，等待后续重试：{error}"))
-            .ok();
+            .ok()
+            .map(Arc::new);
         Self {
             runtime: Mutex::new(MediaRuntimeSlot {
                 retry_after: runtime
@@ -283,10 +284,10 @@ impl SystemMediaManager {
         }
     }
 
-    fn ensure_runtime<'a, R: Runtime>(
-        slot: &'a mut MediaRuntimeSlot,
+    fn ensure_runtime<R: Runtime>(
+        slot: &mut MediaRuntimeSlot,
         app: &AppHandle<R>,
-    ) -> Result<&'a SystemMediaRuntime, String> {
+    ) -> Result<Arc<SystemMediaRuntime>, String> {
         if slot.runtime.is_none() {
             let now = Instant::now();
             if !media_runtime_retry_is_due(slot.retry_after, now) {
@@ -294,7 +295,7 @@ impl SystemMediaManager {
             }
             match SystemMediaRuntime::initialize(app) {
                 Ok(runtime) => {
-                    slot.runtime = Some(runtime);
+                    slot.runtime = Some(Arc::new(runtime));
                     slot.retry_after = None;
                 }
                 Err(error) => {
@@ -305,6 +306,7 @@ impl SystemMediaManager {
         }
         slot.runtime
             .as_ref()
+            .map(Arc::clone)
             .ok_or_else(|| "媒体运行时尚未初始化".to_owned())
     }
 
@@ -314,14 +316,27 @@ impl SystemMediaManager {
         app: &AppHandle<R>,
         operation: impl FnOnce(&SystemMediaRuntime) -> Result<T, String>,
     ) -> Result<T, String> {
-        let mut slot = self
-            .runtime
-            .lock()
-            .map_err(|_| "媒体运行时状态锁已损坏".to_owned())?;
-        let result = operation(Self::ensure_runtime(&mut slot, app)?);
+        let runtime = {
+            let mut slot = self
+                .runtime
+                .lock()
+                .map_err(|_| "媒体运行时状态锁已损坏".to_owned())?;
+            Self::ensure_runtime(&mut slot, app)?
+        };
+        let result = operation(&runtime);
         if result.is_err() {
-            slot.runtime = None;
-            slot.retry_after = Some(Instant::now() + MEDIA_RUNTIME_RETRY_INTERVAL);
+            let mut slot = self
+                .runtime
+                .lock()
+                .map_err(|_| "媒体运行时状态锁已损坏".to_owned())?;
+            if slot
+                .runtime
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &runtime))
+            {
+                slot.runtime = None;
+                slot.retry_after = Some(Instant::now() + MEDIA_RUNTIME_RETRY_INTERVAL);
+            }
         }
         result
     }
@@ -364,12 +379,14 @@ impl SystemMediaManager {
         app: &AppHandle<R>,
         action: ControlAction,
     ) -> Result<(), MediaControlError> {
-        let mut slot = self
-            .runtime
-            .lock()
-            .map_err(|_| MediaControlError::windows_api(action, "媒体运行时状态锁已损坏"))?;
-        let runtime = Self::ensure_runtime(&mut slot, app)
-            .map_err(|error| MediaControlError::windows_api(action, error))?;
+        let runtime = {
+            let mut slot = self
+                .runtime
+                .lock()
+                .map_err(|_| MediaControlError::windows_api(action, "媒体运行时状态锁已损坏"))?;
+            Self::ensure_runtime(&mut slot, app)
+                .map_err(|error| MediaControlError::windows_api(action, error))?
+        };
         runtime.control_media(action)
     }
 }

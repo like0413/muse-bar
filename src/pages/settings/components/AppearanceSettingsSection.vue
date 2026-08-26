@@ -12,8 +12,8 @@ import AppearanceProgressCard from './AppearanceProgressCard.vue'
 import AppearanceTitleScrollCard from './AppearanceTitleScrollCard.vue'
 
 const settingsStore = useSettingsStore()
-const { settings, isSavingSettings, mediaSnapshot } = storeToRefs(settingsStore)
-const controlsDisabled = computed(() => isSavingSettings.value || !settings.value)
+const { settings, mediaSnapshot } = storeToRefs(settingsStore)
+const controlsDisabled = computed(() => !settings.value)
 
 function saveSettingsPatch(patch: SettingsPatch): void {
   void settingsStore.saveSettingsPatch(patch)

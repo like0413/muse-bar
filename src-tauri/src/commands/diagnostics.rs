@@ -5,6 +5,18 @@ use tauri::{AppHandle, Manager};
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+async fn run_blocking_diagnostic<T>(
+    context: &'static str,
+    operation: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(operation)
+        .await
+        .map_err(|error| format!("{context}后台任务意外终止：{error}"))?
+}
+
 /// 前端诊断页显示的 Windows 产品名、版本号和构建号。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,7 +93,11 @@ pub struct TaskbarOccupancyDiagnostic {
 
 /// 读取 Windows 自身报告的版本号，并避免诊断命令弹出控制台窗口。
 #[tauri::command]
-pub fn get_windows_version() -> Result<WindowsVersionDiagnostic, String> {
+pub async fn get_windows_version() -> Result<WindowsVersionDiagnostic, String> {
+    run_blocking_diagnostic("Windows 版本诊断", read_windows_version).await
+}
+
+fn read_windows_version() -> Result<WindowsVersionDiagnostic, String> {
     let output = Command::new("cmd.exe")
         .args(["/D", "/C", "ver"])
         .creation_flags(CREATE_NO_WINDOW)
@@ -196,7 +212,7 @@ pub fn get_taskbar_dpi() -> Result<TaskbarDpiDiagnostic, String> {
 /// 返回任务栏框架、任务按钮和系统托盘等原生控件的屏幕占用矩形。
 #[tauri::command]
 pub async fn get_taskbar_occupied_regions() -> Result<TaskbarOccupancyDiagnostic, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+    run_blocking_diagnostic("任务栏占用区域诊断", || {
         let taskbar = crate::taskbar::find_main_taskbar()?;
         let taskbar_rect = crate::taskbar::read_taskbar_rect(&taskbar)?;
         let occupancy = crate::taskbar::read_occupied_regions(&taskbar, &taskbar_rect);
@@ -212,22 +228,24 @@ pub async fn get_taskbar_occupied_regions() -> Result<TaskbarOccupancyDiagnostic
         })
     })
     .await
-    .map_err(|error| format!("任务栏占用区域后台任务意外终止：{error}"))?
 }
 
 /// 创建应用日志目录，并交给 Windows 文件资源管理器打开。
 #[tauri::command]
-pub fn open_log_directory(app: AppHandle) -> Result<(), String> {
-    let log_directory = app
-        .path()
-        .app_log_dir()
-        .map_err(|error| format!("无法确定日志目录：{error}"))?;
+pub async fn open_log_directory(app: AppHandle) -> Result<(), String> {
+    run_blocking_diagnostic("日志目录操作", move || {
+        let log_directory = app
+            .path()
+            .app_log_dir()
+            .map_err(|error| format!("无法确定日志目录：{error}"))?;
 
-    fs::create_dir_all(&log_directory).map_err(|error| format!("无法创建日志目录：{error}"))?;
-    Command::new("explorer.exe")
-        .arg(&log_directory)
-        .spawn()
-        .map_err(|error| format!("无法打开日志目录：{error}"))?;
+        fs::create_dir_all(&log_directory).map_err(|error| format!("无法创建日志目录：{error}"))?;
+        Command::new("explorer.exe")
+            .arg(&log_directory)
+            .spawn()
+            .map_err(|error| format!("无法打开日志目录：{error}"))?;
 
-    Ok(())
+        Ok(())
+    })
+    .await
 }

@@ -24,11 +24,13 @@ export async function startColorModeSync(): Promise<() => void> {
   const systemColorMode = window.matchMedia('(prefers-color-scheme: dark)')
   let currentColorMode: ColorMode = 'system'
   let stopSettingsListener: UnlistenFn | undefined
+  let settingsRevision = 0
 
   /** 将当前内存状态重新应用到当前 WebView。 */
   const applyCurrentMode = () => applyColorMode(currentColorMode, systemColorMode)
   /** 接收 Rust 广播的完整设置并提取颜色模式。 */
   const handleSettings = (settings: SettingsPayload) => {
+    settingsRevision += 1
     currentColorMode = readColorMode(settings)
     applyCurrentMode()
   }
@@ -43,8 +45,10 @@ export async function startColorModeSync(): Promise<() => void> {
 
   try {
     // 先订阅再读取，避免初始化期间恰好发生的设置更新被遗漏。
+    const initialRevision = settingsRevision
     stopSettingsListener = await listenToSettingsChanges(handleSettings)
-    handleSettings(await getSettings())
+    const settings = await getSettings()
+    if (settingsRevision === initialRevision) handleSettings(settings)
   } catch {
     // 设置通路暂时不可用时保留“跟随系统”，窗口仍可正常显示。
   }

@@ -20,7 +20,7 @@ import { useSettingsStore } from './settings-store'
 
 const activeSection = shallowRef<SettingsSection>('taskbar')
 const settingsStore = useSettingsStore()
-const { settingsError } = storeToRefs(settingsStore)
+const { settingsError, isSavingSettings } = storeToRefs(settingsStore)
 let hasUnmounted = false
 
 const activeSectionComponent = computed(() => {
@@ -88,9 +88,11 @@ onBeforeUnmount(() => {
             </p>
           </div>
 
+          <p v-if="isSavingSettings" class="sr-only" aria-live="polite">正在保存设置</p>
+
           <Alert v-if="settingsError" variant="destructive">
             <AlertCircleIcon />
-            <AlertTitle>设置保存失败</AlertTitle>
+            <AlertTitle>设置不可用</AlertTitle>
             <AlertDescription>{{ settingsError }}</AlertDescription>
           </Alert>
 

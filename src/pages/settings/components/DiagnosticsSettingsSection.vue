@@ -23,6 +23,8 @@ const {
   taskbarMonitorError,
   mediaSnapshotError,
   logDirectoryError,
+  isRefreshingDiagnostics,
+  isOpeningLogDirectory,
 } = storeToRefs(settingsStore)
 
 const taskbarOccupancySourceLabels = {
@@ -50,15 +52,31 @@ function formatStartedAt(startedAtUnixMs: number): string {
 <template>
   <div class="flex flex-col gap-4">
     <div class="flex justify-end gap-2">
-      <Button variant="outline" size="sm" @click="settingsStore.loadTaskbarDiagnostics">
-        <RefreshCwIcon data-icon="inline-start" />刷新诊断
+      <Button
+        variant="outline"
+        size="sm"
+        :disabled="isRefreshingDiagnostics"
+        :aria-describedby="taskbarDiagnosticError ? 'taskbar-diagnostic-error' : undefined"
+        @click="settingsStore.loadTaskbarDiagnostics"
+      >
+        <RefreshCwIcon
+          data-icon="inline-start"
+          :class="{ 'animate-spin': isRefreshingDiagnostics }"
+        />
+        {{ isRefreshingDiagnostics ? '正在刷新' : '刷新诊断' }}
       </Button>
-      <Button size="sm" @click="settingsStore.openLogs">
-        <FolderOpenIcon data-icon="inline-start" />打开日志目录
+      <Button
+        size="sm"
+        :disabled="isOpeningLogDirectory"
+        :aria-describedby="logDirectoryError ? 'log-directory-error' : undefined"
+        @click="settingsStore.openLogs"
+      >
+        <FolderOpenIcon data-icon="inline-start" />
+        {{ isOpeningLogDirectory ? '正在打开' : '打开日志目录' }}
       </Button>
     </div>
 
-    <Alert v-if="logDirectoryError" variant="destructive">
+    <Alert v-if="logDirectoryError" id="log-directory-error" variant="destructive">
       <AlertCircleIcon />
       <AlertTitle>无法打开日志目录</AlertTitle>
       <AlertDescription>{{ logDirectoryError }}</AlertDescription>
@@ -99,7 +117,7 @@ function formatStartedAt(startedAtUnixMs: number): string {
         <CardDescription>任务栏身份、DPI 和原生控件测量结果。</CardDescription>
       </CardHeader>
       <CardContent class="flex flex-col gap-4">
-        <Alert v-if="taskbarDiagnosticError" variant="destructive">
+        <Alert v-if="taskbarDiagnosticError" id="taskbar-diagnostic-error" variant="destructive">
           <AlertCircleIcon />
           <AlertTitle>任务栏诊断失败</AlertTitle>
           <AlertDescription>{{ taskbarDiagnosticError }}</AlertDescription>

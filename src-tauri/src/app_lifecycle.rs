@@ -1,11 +1,10 @@
-use std::io;
-
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     webview::WebviewWindowBuilder,
     App, AppHandle, Manager, Runtime,
 };
+use thiserror::Error;
 
 use crate::state::AppState;
 
@@ -16,8 +15,16 @@ const MENU_SETTINGS_ID: &str = "open-settings";
 const MENU_TOGGLE_BAR_ID: &str = "toggle-bar";
 const MENU_EXIT_ID: &str = "exit";
 
+#[derive(Debug, Error)]
+pub(crate) enum AppLifecycleError {
+    #[error(transparent)]
+    Tauri(#[from] tauri::Error),
+    #[error("应用配置中缺少托盘图标")]
+    MissingTrayIcon,
+}
+
 /// 创建进程级托盘图标以及设置、Bar 显隐和退出菜单。
-pub(crate) fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn create_tray(app: &App) -> Result<(), AppLifecycleError> {
     let settings_item = MenuItem::with_id(app, MENU_SETTINGS_ID, "设置", true, None::<&str>)?;
     let toggle_bar_item =
         MenuItem::with_id(app, MENU_TOGGLE_BAR_ID, "隐藏 Bar", true, None::<&str>)?;
@@ -30,7 +37,7 @@ pub(crate) fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let icon = app
         .default_window_icon()
         .cloned()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "应用配置中缺少托盘图标"))?;
+        .ok_or(AppLifecycleError::MissingTrayIcon)?;
 
     let toggle_bar_menu = toggle_bar_item.clone();
     TrayIconBuilder::with_id(TRAY_ID)

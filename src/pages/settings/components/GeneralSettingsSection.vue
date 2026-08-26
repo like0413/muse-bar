@@ -17,7 +17,7 @@ import { readLaunchOnStartup } from '@/lib/settings-api'
 import { useSettingsStore } from '../settings-store'
 
 const settingsStore = useSettingsStore()
-const { settings, isSavingSettings } = storeToRefs(settingsStore)
+const { settings } = storeToRefs(settingsStore)
 const launchOnStartup = computed(() => readLaunchOnStartup(settings.value))
 
 /** 保存开机启动开关，Rust 会同步 Windows 当前用户启动项。 */
@@ -42,7 +42,7 @@ function handleLaunchOnStartupChange(enabled: boolean): void {
           </FieldContent>
           <Switch
             :model-value="launchOnStartup"
-            :disabled="isSavingSettings || !settings"
+            :disabled="!settings"
             aria-label="开机启动"
             @update:model-value="handleLaunchOnStartupChange"
           />

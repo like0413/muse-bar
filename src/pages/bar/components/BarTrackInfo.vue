@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { usePreferredReducedMotion } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import {
   computed,
@@ -32,6 +33,7 @@ const playbackStatusLabels: Record<CurrentPlaybackStatus, string> = {
 }
 
 const barStore = useBarStore()
+const preferredReducedMotion = usePreferredReducedMotion()
 const {
   snapshot,
   settings,
@@ -206,7 +208,10 @@ async function refreshTitleScrolling(): Promise<void> {
   const textWidth = measureTitleWidth(primaryTitle)
   const viewportWidth = viewport.clientWidth
   const shouldScroll =
-    titleScrollEnabled.value && viewportWidth > 0 && textWidth > viewportWidth + 0.5
+    preferredReducedMotion.value !== 'reduce' &&
+    titleScrollEnabled.value &&
+    viewportWidth > 0 &&
+    textWidth > viewportWidth + 0.5
   isTitleScrolling.value = shouldScroll
   if (!shouldScroll) return
 
@@ -241,7 +246,7 @@ const mediaDetails = computed(() =>
 )
 
 watch(
-  [displayTitle, titleScrollEnabled, titleScrollSpeed, titleScrollMode],
+  [displayTitle, titleScrollEnabled, titleScrollSpeed, titleScrollMode, preferredReducedMotion],
   scheduleTitleScrollingRefresh,
   { flush: 'post' },
 )

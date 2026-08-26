@@ -744,109 +744,89 @@ plain DTO / selection / layout policy <- coordinator or adapter
 
 # 九、Rust 模块和代码质量
 
+状态：`Confirmed`，已完成。
+
 ## 38. 拆分超大模块
 
-优先级：
+状态：由第八章和本章入口重组共同完成。
 
-1. `system_media.rs`
-2. `media_activity.rs`
-3. `taskbar_occupancy.rs`
-4. `child_host.rs`
-5. `explorer_monitor.rs`
+- `media/` 包含 `runtime`、`activity`、`model`、`selection`、`control` 和 `artwork`。
+- `taskbar/` 包含 `system`、`layout`、`occupancy`、`host`、`explorer` 和 `bar`。
+- `settings/` 包含设置模型/持久化和更新事务。
+- 三个 `mod.rs` 均作为 facade，内部模块默认私有，只重导出跨域调用需要的接口。
 
-拆分时保持 public API 不变。
+`media/runtime.rs` 和 `media/activity.rs` 仍较长，但分别维护单个 WinRT 订阅状态机和活动采集状态机。
+继续按行数拆分会让事件 token、Drop 注销顺序和 worker 生命周期跨模块扩散，因此本轮保留。
 
 ## 39. 错误体系
 
-目前大量使用 `Result<T, String>`，短期可用，但长期会丢失错误类别。
+状态：`Confirmed / Conditional`。
 
-建议：
-
-- 模块内部使用 `thiserror` 枚举。
-- IPC 边界转换为可序列化错误。
-- 日志保留底层上下文。
-- 用户消息避免直接暴露 Windows/HRESULT 技术细节。
+- 设置持久化使用 `SettingsPersistenceError`，媒体控制使用可序列化 `MediaControlError`。
+- 本轮新增 `AppLifecycleError`，托盘入口不再返回 `Box<dyn Error>`。
+- Command 边界和大量 Win32 adapter 仍保留 `Result<T, String>`：这些错误只跨一次 IPC 或立即写日志，
+  目前没有调用方按类别恢复。为每个 HRESULT 建立只使用一次的枚举会增加样板而没有行为收益。
+- 若未来新增可重试、可降级或需前端分支处理的错误，再在对应领域增加结构化错误变体。
 
 ## 40. `Box<dyn Error>` 收敛
 
-状态：由第 28 节的直接依赖提前完成。
+状态：`Confirmed`，已完成。
 
 设置模块已用 `SettingsPersistenceError` 替换 `Box<dyn Error>`，区分 I/O、JSON、应用路径、缺少父目录、
 未来 schema、无效 schema 和写后校验失败。读取路径据此只恢复真正损坏的配置；未来版本保持原文件并
 停止加载，普通 I/O 与备份失败继续向上传播。第九章不再重复改造此模块，只复核其他 Rust 模块的
-错误边界。
+错误边界。本轮又移除了托盘创建剩余的 `Box<dyn Error>`；生产 Rust 源码已无动态错误盒。
 
 ## 41. Clone 审计
 
-重点检查大对象：
+状态：`Verify → Keep`。
 
-- 封面 base64 字符串。
-- 完整媒体快照。
-- 活动记录集合。
-- 任务栏区域集合。
-- Settings 快照。
+- 封面 base64、完整快照和设置快照仅在缓存返回、事件载荷或跨线程不可共享所有权时复制。
+- 时间轴走独立轻量事件，不会因进度刷新重复传输封面。
+- 任务栏占用区只在可信缓存写入/命中时复制，采集阶段不增加中间集合。
+- `AppHandle`、sender 和 WinRT session handle 的 clone 均用于回调或线程取得所有权。
 
-允许保留：
-
-- `AppHandle`
-- sender
-- WinRT session handle
-- 小型配置
-- 为跨线程所有权所需的 clone
-
-优化必须建立在调用频率和对象大小证据上。
+严格 Clippy 未报告 `redundant_clone`、`needless_collect` 或其他性能 lint；没有在无测量证据时改写
+这些所有权边界。
 
 ## 42. 锁和并发
 
-检查：
+状态：`Confirmed`，本轮修复一处关键临界区。
 
-- 锁持有期间是否调用 Windows API。
-- 锁持有期间是否 emit。
-- 是否存在读写锁中毒后的恢复策略。
-- async command 是否持有同步锁跨越 await。
-- 后台 channel 是否有界。
-- worker 是否可以停止。
-- Explorer 重启是否创建重复 worker。
-- 应用退出是否等待必要清理。
+- `SystemMediaManager` 现以 `Arc<SystemMediaRuntime>` 取得一次运行时快照后立即释放 slot 锁，WinRT
+  查询、媒体控制和事件发送均不再持有该锁。
+- 操作失败时仅在 slot 仍指向同一 `Arc` 时清除运行时，避免并发重建覆盖较新的实例。
+- 活动 worker 使用容量 64 的有界 channel；Explorer 恢复使用容量 1 的合并 channel。
+- worker 均有停止信号和有界 join，`RunEvent::Exit` 统一请求媒体与 Explorer 线程退出。
+- 同步锁没有跨越 Rust `await`；锁中毒均转换为错误或退出日志。
 
 ## 43. Blocking 和后台线程
 
-区分：
+状态：`Confirmed`，已完成。
 
-- WinRT 阻塞 `.get()`
-- 图像解码
-- 文件 I/O
-- 任务栏 UI Automation
-- Explorer 查询
-
-确保它们不运行在 Tauri 主线程或 async executor 的关键线程上。
+- WinRT 元数据和封面读取位于固定后台 apartment；活动采集和 Explorer 恢复由专用 worker 负责。
+- UI Automation 占用区诊断继续使用 `spawn_blocking`。
+- 本轮把 Windows 版本子进程、日志目录文件 I/O 和 Explorer 启动也移入统一
+  `run_blocking_diagnostic`，避免阻塞 Tauri async executor。
+- 快速的任务栏身份和 DPI Win32 查询保持同步 Command，不为微小调用增加线程切换成本。
 
 ## 44. 算法复杂度
 
-重点测量：
+状态：`Verify → Keep`。
 
-- 会话选择。
-- 活动记录清理。
-- 任务栏区域查找和去重。
-- 窗口碰撞计算。
-- 封面颜色统计。
-- 高频集合的 `Vec::contains`。
-
-当前封面颜色使用固定大小桶，方向合理，不建议机械重写。
+会话数、任务栏子控件数和诊断列表都属于小集合；当前线性扫描更简单。封面颜色使用固定大小桶，
+布局策略使用迭代器且没有无意义中间集合。没有发现需要用哈希表或复杂索引替换的热点。
 
 ## 45. 参数对象和语义类型
 
-修复 `animate_window_width` 的 11 个参数。
+状态：由第八章提前完成并在本章复核。
 
-另外检查：
+- `animate_window_width` 使用 `WindowWidthAnimationRequest`，挂载使用 `AttachWindowOptions`。
+- `TaskbarRect`、`TaskbarDpi` 和 `OccupiedRect` 集中物理/逻辑像素换算与矩形约束。
+- 时间轴字段名称显式带 `Ms` / `UnixMs`，Windows ticks 只在媒体 adapter 内转换。
+- HWND 只在 Windows adapter 内存在，跨线程时传数值并在主线程恢复。
 
-- 多个布尔参数。
-- 多个坐标整数。
-- 毫秒和 Windows ticks。
-- 逻辑像素和物理像素。
-- HWND 数值。
-
-可用小型类型减少单位混用，但避免过度包装。
+没有为每个坐标整数继续增加零收益 newtype。
 
 ---
 
@@ -854,59 +834,43 @@ plain DTO / selection / layout policy <- coordinator or adapter
 
 # 十、状态管理与数据一致性
 
+状态：`Confirmed`，已完成。
+
 ## 46. 状态分类
 
-明确区分：
-
-- Local UI State：面板展开、输入焦点。
-- Form Draft：设置页未保存草稿。
-- Persistent State：Rust 保存的设置。
-- Runtime State：任务栏和媒体状态。
-- Derived State：显示文字、按钮可用性。
-- Diagnostic State：只供诊断页显示。
+状态边界已经落实：导航项、悬停和输入草稿留在组件；持久化设置、媒体快照和监听生命周期由 Store
+持有；任务栏与媒体选择算法留在 Rust；展示文字和按钮能力由 `computed` 推导；诊断数据只由设置页
+Store 暴露给诊断/媒体分区。
 
 ## 47. Pinia Store 边界
 
-Bar Store 应负责：
+状态：`Verify → Keep`。
 
-- 当前媒体投影。
-- 事件订阅。
-- 页面生命周期。
-- 控制错误。
-
-不应负责：
-
-- Windows 媒体选择算法。
-- 原生窗口定位。
-- 设置持久化实现。
-
-Settings Store 应负责：
-
-- 服务端设置快照。
-- 表单草稿。
-- dirty 状态。
-- 保存流程。
-- 保存错误。
+Bar Store 只拥有当前媒体投影、设置投影、事件生命周期和 UI 错误；Windows 会话选择、原生定位和
+持久化仍在 Rust。Settings Store 统一拥有服务端设置快照、保存队列、诊断数据和监听生命周期。
+字段级草稿只在实际需要延迟提交的卡片内存在，没有建立第二套全局 form store 或无实际产品语义的
+dirty 状态。
 
 ## 48. 避免重复状态
 
-重点排查：
+状态：`Confirmed`。
 
-- Store 同时保存原值和可计算显示值。
-- 组件复制 Store 字段后无法同步。
-- Bar 同时保存完整快照和重复的元数据字段。
-- 设置保存成功后仍使用提交前的草稿对象。
+- 两个 Store 的媒体和设置对象使用 `shallowRef`，只在根引用处替换大型快照。
+- 播放能力、展示文字、主题和布局类均由 `computed` 从快照/设置推导。
+- Slider、颜色和手动偏移草稿通过 watcher 在 Rust 返回规范化设置后重新同步。
+- 保存成功后始终采用 `updateSettings` 返回的完整设置，不继续使用提交前对象。
 
 ## 49. 并发和乱序
 
-继续强化现有优秀处理：
+状态：`Confirmed`，本轮继续强化。
 
-- listener 注册和首次读取的顺序。
-- 快速媒体切换产生的旧事件。
-- 连续保存设置时的返回乱序。
-- 快速开关 Bar 导致窗口命令乱序。
-- 连续打开 Settings 创建重复窗口。
-- 页面卸载后异步结果回写。
+- 新增共享 `TauriListenerScope`：每次页面激活拥有独立 revision，异步注册完成时若已卸载会立即
+  unlisten；旧激活周期的请求不能回写新周期。
+- 首次读取使用事件 revision 门禁，若监听期间已收到快照、时间轴、会话、活动或设置事件，旧查询
+  结果不会覆盖新事件。
+- 设置保存改为串行合并队列；保存期间的新补丁不会被丢弃，并基于上一次 Rust 返回值继续提交。
+- 媒体选择请求、诊断刷新和 Bar 显隐命令均使用 revision 或 promise 队列避免乱序。
+- Tauri 单实例插件继续保证重复启动只唤醒同一个 Settings 窗口。
 
 ---
 
@@ -914,11 +878,11 @@ Settings Store 应负责：
 
 # 十一、Vue 组件与前端结构
 
+状态：`Confirmed`，已完成。
+
 ## 50. 保持页面组件为组合层
 
-当前 Bar 页面较薄，应保留。
-
-Settings 页面继续优化为：
+状态：由第八章提前完成并复核。当前结构为：
 
 ```
 SettingsPage
@@ -931,102 +895,74 @@ SettingsPage
 └── DiagnosticsSettingsSection
 ```
 
-页面只负责导航、加载状态和保存协调。
+`bar/index.vue` 只连接 Store、打开设置页和组合 `BarLayout`；`settings/index.vue` 只负责导航、初始化、
+错误总览和动态分区组合。
 
 ## 51. 拆分超大设置组件
 
-`AppearanceSettingsSection.vue` 接近 500 行，建议按功能拆分：
-
-- `ColorModeField`
-- `LayoutAlignmentField`
-- `ProgressAppearanceFields`
-- `TitleScrollFields`
-- `LyricsAppearanceFields`
-
-拆分条件是具有独立数据契约，而不是单纯按行数切割。
+状态：由第八章提前完成。原 496 行组件现为 52 行连接容器，拆出的颜色、控制、对齐、进度和标题
+滚动卡片各自具有独立设置契约；歌词布局仍属于 Taskbar 分区，没有为凑数量移动职责。
 
 ## 52. 收拢设置表单契约
 
-子组件采用：
-
-- Props：当前值、错误、disabled。
-- Emits：字段更新或语义操作。
-- 不直接访问 Store。
-- 不直接调用 IPC。
-- 不修改传入对象。
+状态：`Confirmed`。Appearance 子卡片均使用类型化 props/emits，不访问 Store、不调用 IPC，也不修改
+传入对象。连接容器是该子树唯一的 Settings Store 消费者。
 
 ## 53. Vue 响应式模型
 
-全面检查：
-
-- 源状态保持最少。
-- 可推导字段改用 `computed`。
-- Watcher 仅用于副作用。
-- Watcher 的异步操作支持失效或取消。
-- 大型快照只在根引用替换时更新。
-- 不在 template 中执行排序、过滤或复杂函数。
-- 不在 computed 中写状态或调用 IPC。
+状态：`Confirmed`。源状态使用 `shallowRef`，展示数据使用纯 `computed`，watcher 只同步输入草稿或执行
+DOM 测量副作用；异步 DOM 刷新使用 revision 失效；模板没有排序/过滤，computed 不写状态或调用 IPC。
 
 ## 54. Listener 和 Timer 生命周期
 
-为以下资源建立统一检查：
+状态：`Confirmed`。
 
-- Tauri event listener
-- `matchMedia` listener
-- timeout
-- animation frame
-- ResizeObserver
-- 原生窗口事件
-
-所有初始化都应应对“异步注册完成前组件已经卸载”的情况。
+- Tauri listener 由 `TauriListenerScope` 统一收集和释放。
+- 颜色模式同步同时释放 Tauri listener 与 `matchMedia` listener，并用 revision 防止首次读取覆盖事件。
+- Bar 的 timeout、animation frame、Web Animation 和两个 `ResizeObserver` 均在卸载时取消。
+- 设置窗口初始化在每个 await 后检查卸载状态；原生窗口事件由 Tauri/Rust 生命周期持有。
 
 ## 55. Loading 状态细化
 
-不要共用一个 `loading`：
-
-- `isInitializing`
-- `isSaving`
-- `isRefreshingDiagnostics`
-- `isApplyingWindowChanges`
-- `isExecutingMediaControl`
-
-避免一次后台刷新导致整个页面不可操作。
+状态：`Confirmed`。保存、诊断刷新、打开日志目录和媒体控制分别使用
+`isSavingSettings`、`isRefreshingDiagnostics`、`isOpeningLogDirectory` 和组件本地
+`isControlPending`。设置保存改为队列后不会禁用整页控件，诊断刷新只禁用对应按钮。
 
 ## 56. Error 和 Empty UX
 
-区分：
-
-- 当前没有媒体会话。
-- 媒体读取失败。
-- 当前播放器不支持控制。
-- 设置保存失败。
-- 权限或系统 API 不可用。
-- Settings 窗口显示失败。
-- Explorer 重启恢复中。
-
-每种错误说明发生了什么、是否影响数据、能否重试。
+状态：`Confirmed / Keep`。空媒体、读取失败、不支持控制、设置不可用、设置窗口打开失败、任务栏诊断
+失败和日志目录失败使用独立状态与文案。Explorer 恢复是自动后台行为，当前只写日志；没有用户可执行的
+恢复动作，因此不增加持续闪烁的前端错误状态。
 
 ## 57. 可访问性
 
-全面检查：
+状态：`Confirmed`。
 
-- 图标按钮具备可访问名称。
-- Slider 和 ToggleGroup 有标签。
-- 错误使用 `aria-describedby`。
-- 键盘焦点样式可见。
-- Dialog 能正确恢复焦点。
-- 不只依靠颜色表达状态。
-- 动画遵循 `prefers-reduced-motion`。
+- 媒体图标按钮、Switch、Slider 和 ToggleGroup 均有文本标签或 `aria-label`。
+- 诊断按钮使用 `aria-describedby` 关联对应错误，保存状态使用 `aria-live`。
+- shadcn-vue/Reka 控件保留可见 `focus-visible` 样式和 Dialog 焦点恢复语义。
+- 状态同时使用文字/图标/禁用语义，不只依赖颜色。
+- 标题滚动使用 `usePreferredReducedMotion` 停止创建动画，全局 CSS 同时压缩其他动画与过渡。
 
 ## 58. 快捷键和跨平台按键
 
-虽然当前产品是 Windows 专用，仍需检查：
+状态：`Verify → Keep`。交互使用原生 Button/Input 和 Reka Select/Dialog 语义，Tab、Space、Enter、Escape
+沿用标准键盘行为；手动偏移额外支持 Enter 提交。项目没有注册全局 WebView 快捷键，不会拦截输入框
+或系统媒体键。
 
-- Escape 关闭临时 UI。
-- Enter 提交设置。
-- Tab 顺序。
-- Space 触发媒体按钮。
-- 快捷键不会与 WebView、输入框或系统媒体键冲突。
+## 第九至十一章验收
+
+2026-08-26 已完成：
+
+- `vp check`：372 个文件格式正确，336 个文件无 lint 或类型错误。
+- `cargo fmt --check` 与 `cargo check --locked`：通过。
+- `cargo clippy --locked --all-targets --all-features -- -D warnings`：通过。
+- `cargo clippy --locked --all-targets --all-features -- -D clippy::perf`：通过。
+- `vp build`：生产构建通过。
+- `vp exec tauri dev`：应用正常启动；第二实例退出码为 0，并由现有实例处理。
+- 验收结束后已关闭本轮启动的 Muse Bar、Cargo 和 Vite+ 开发服务，端口 1420 空闲。
+
+本章未新增或运行自动化测试代码。
 
 ---
 

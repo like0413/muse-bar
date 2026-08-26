@@ -1,4 +1,3 @@
-import type { UnlistenFn } from '@tauri-apps/api/event'
 import { defineStore } from 'pinia'
 import { shallowRef } from 'vue'
 
@@ -11,6 +10,7 @@ import {
 import { getCurrentMediaSnapshot, refreshSelectedMediaSession } from '@/lib/media-query-api'
 import type { CurrentTimeline, MediaSelectionReason, MediaSnapshot } from '@/lib/media-types'
 import { getSettings, listenToSettingsChanges, type SettingsPayload } from '@/lib/settings-api'
+import { TauriListenerScope } from '@/lib/tauri-listener-scope'
 
 const selectionReasonLabels: Record<MediaSelectionReason, string> = {
   playingPreferred: '最近播放的音乐播放器',
@@ -27,12 +27,14 @@ export const useBarStore = defineStore('bar', () => {
   const barWidthDetails = shallowRef('宽度：等待测量')
   const settingsWindowError = shallowRef('')
   const controlError = shallowRef('')
-  const listeners: UnlistenFn[] = []
-  let isActive = false
+  const listenerScope = new TauriListenerScope()
   let isWaitingForChangedTrackTimeline = false
   let timelineResetAtUnixMs: number | null = null
   let lastReportedMediaAvailable: boolean | undefined
   let mediaAvailabilityQueue = Promise.resolve()
+  let snapshotRevision = 0
+  let settingsRevision = 0
+  let selectionRequestRevision = 0
 
   /** 判断两份快照是否属于不同歌曲；切换播放器时即使曲目信息相同也视为变化。 */
   function hasTrackChanged(
@@ -56,13 +58,14 @@ export const useBarStore = defineStore('bar', () => {
       .then(() => setBarMediaAvailable(available))
       .catch((error: unknown) => {
         if (lastReportedMediaAvailable === available) lastReportedMediaAvailable = undefined
-        if (!isActive) return
+        if (!listenerScope.isActive) return
         barWidthDetails.value = `Bar 显隐同步失败：${error instanceof Error ? error.message : String(error)}`
       })
   }
 
   /** 应用 Rust 推送的统一媒体快照，并同步无会话提示。 */
   function applySnapshot(nextSnapshot: MediaSnapshot | null): void {
+    snapshotRevision += 1
     reportMediaAvailability(nextSnapshot !== null && nextSnapshot.playbackStatus !== 'closed')
     const currentSnapshot = snapshot.value
     const trackChanged = hasTrackChanged(currentSnapshot, nextSnapshot)
@@ -87,6 +90,7 @@ export const useBarStore = defineStore('bar', () => {
   /** 将轻量时间轴事件合并进当前快照，避免仅因进度变化重新传输封面等数据。 */
   function applyTimeline(timeline: CurrentTimeline | null): void {
     if (!snapshot.value) return
+    snapshotRevision += 1
     if (isWaitingForChangedTrackTimeline) {
       if (
         !timeline ||
@@ -103,88 +107,99 @@ export const useBarStore = defineStore('bar', () => {
 
   /** 应用设置页和 Rust 广播的完整设置。 */
   function applySettings(nextSettings: SettingsPayload): void {
+    settingsRevision += 1
     settings.value = nextSettings
   }
 
-  /** 注册异步创建的事件监听器；若页面已卸载则立即销毁它。 */
-  async function registerListener(listenerPromise: Promise<UnlistenFn>): Promise<void> {
-    const stopListener = await listenerPromise
-    if (!isActive) {
-      stopListener()
-      return
-    }
-    listeners.push(stopListener)
-  }
-
   /** 按最新播放器活动重新选择会话，并保存供悬停诊断使用的选择原因。 */
-  async function refreshMediaSelection(): Promise<void> {
+  async function refreshMediaSelection(lifecycleRevision: number): Promise<void> {
+    const requestRevision = ++selectionRequestRevision
     try {
       const selection = await refreshSelectedMediaSession()
-      if (!isActive) return
+      if (
+        !listenerScope.isCurrent(lifecycleRevision) ||
+        requestRevision !== selectionRequestRevision
+      )
+        return
       mediaSelectionText.value = selection
         ? `选择：${selectionReasonLabels[selection.reason]}`
         : '选择：当前没有媒体会话'
     } catch {
-      if (isActive) mediaSelectionText.value = '选择：刷新失败'
+      if (
+        listenerScope.isCurrent(lifecycleRevision) &&
+        requestRevision === selectionRequestRevision
+      )
+        mediaSelectionText.value = '选择：刷新失败'
     }
   }
 
   /** 建立媒体快照和轻量时间轴监听，并在监听就绪后读取一次当前值。 */
-  async function startSnapshotListener(): Promise<void> {
+  async function startSnapshotListener(lifecycleRevision: number): Promise<void> {
     try {
+      const initialRevision = snapshotRevision
       await Promise.all([
-        registerListener(listenToCurrentMediaSnapshotChanges(applySnapshot)),
-        registerListener(listenToCurrentTimelineChanges(applyTimeline)),
+        listenerScope.register(
+          lifecycleRevision,
+          listenToCurrentMediaSnapshotChanges(applySnapshot),
+        ),
+        listenerScope.register(lifecycleRevision, listenToCurrentTimelineChanges(applyTimeline)),
       ])
       const currentSnapshot = await getCurrentMediaSnapshot()
-      if (isActive) applySnapshot(currentSnapshot)
+      if (listenerScope.isCurrent(lifecycleRevision) && snapshotRevision === initialRevision)
+        applySnapshot(currentSnapshot)
     } catch {
-      if (isActive) mediaStatus.value = '媒体信息监听失败'
+      if (listenerScope.isCurrent(lifecycleRevision)) mediaStatus.value = '媒体信息监听失败'
     }
   }
 
   /** 监听播放器有效活动，仅在需要时要求 Rust 重新选择当前会话。 */
-  async function startSelectionListener(): Promise<void> {
+  async function startSelectionListener(lifecycleRevision: number): Promise<void> {
     try {
-      await registerListener(
+      await listenerScope.register(
+        lifecycleRevision,
         listenToMediaSessionActivityChanges(() => {
-          void refreshMediaSelection()
+          void refreshMediaSelection(lifecycleRevision)
         }),
       )
-      await refreshMediaSelection()
+      await refreshMediaSelection(lifecycleRevision)
     } catch {
-      if (isActive) mediaSelectionText.value = '选择：监听失败'
+      if (listenerScope.isCurrent(lifecycleRevision)) mediaSelectionText.value = '选择：监听失败'
     }
   }
 
   /** 建立设置监听，并在监听就绪后读取一次持久化设置。 */
-  async function startSettingsListener(): Promise<void> {
+  async function startSettingsListener(lifecycleRevision: number): Promise<void> {
     try {
-      await registerListener(listenToSettingsChanges(applySettings))
+      const initialRevision = settingsRevision
+      await listenerScope.register(lifecycleRevision, listenToSettingsChanges(applySettings))
       const currentSettings = await getSettings()
-      if (isActive) applySettings(currentSettings)
+      if (listenerScope.isCurrent(lifecycleRevision) && settingsRevision === initialRevision)
+        applySettings(currentSettings)
     } catch (error) {
-      if (!isActive) return
+      if (!listenerScope.isCurrent(lifecycleRevision)) return
       barWidthDetails.value = `设置监听失败：${error instanceof Error ? error.message : String(error)}`
     }
   }
 
   /** 启动 Bar 页面唯一的一组全局事件监听，防止子组件重复订阅。 */
   async function start(): Promise<void> {
-    if (isActive) return
-    isActive = true
+    if (listenerScope.isActive) return
+    const lifecycleRevision = listenerScope.activate()
     // 冷启动时先选择并绑定实际媒体会话，再读取初始快照，避免暂时为空的缓存触发隐藏。
-    await startSelectionListener()
-    await Promise.all([startSnapshotListener(), startSettingsListener()])
+    await startSelectionListener(lifecycleRevision)
+    await Promise.all([
+      startSnapshotListener(lifecycleRevision),
+      startSettingsListener(lifecycleRevision),
+    ])
   }
 
   /** 销毁 Bar 页面建立的全部监听器。 */
   function stop(): void {
-    isActive = false
+    listenerScope.deactivate()
+    selectionRequestRevision += 1
     isWaitingForChangedTrackTimeline = false
     timelineResetAtUnixMs = null
     lastReportedMediaAvailable = undefined
-    for (const stopListener of listeners.splice(0)) stopListener()
   }
 
   function setBarWidthDetails(details: string): void {
