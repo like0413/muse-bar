@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process'
+
 const stableVersionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 
 const [, , latestVersion, nextVersion] = process.argv
@@ -18,9 +20,30 @@ const compareVersions = (left, right) => {
   return 0
 }
 
-if (
-  stableVersionPattern.test(latestVersion ?? '') &&
-  compareVersions(nextVersion, latestVersion) <= 0
-) {
-  throw new Error(`Release version ${nextVersion} must be newer than ${latestVersion}`)
+const readStableTags = (args) =>
+  execFileSync('git', args, {
+    encoding: 'utf8',
+    timeout: 15_000,
+    windowsHide: true,
+  })
+    .split(/\r?\n/)
+    .map((line) =>
+      line
+        .trim()
+        .split(/\s+/)
+        .at(-1)
+        ?.replace(/^(?:refs\/tags\/)?v/, ''),
+    )
+    .filter((version) => stableVersionPattern.test(version ?? ''))
+
+const localTags = readStableTags(['tag', '--list', 'v*'])
+const versionFloors = [latestVersion, ...localTags].filter((version) =>
+  stableVersionPattern.test(version ?? ''),
+)
+const highestVersion = versionFloors.sort(compareVersions).at(-1)
+
+if (highestVersion && compareVersions(nextVersion, highestVersion) <= 0) {
+  throw new Error(
+    `Release version ${nextVersion} must be newer than configuration and fetched Git tags (highest: ${highestVersion})`,
+  )
 }

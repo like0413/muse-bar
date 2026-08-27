@@ -1,5 +1,5 @@
 {
-  "$schema": "https://unpkg.com/release-it@20/schema/release-it.json",
+  "$schema": "https://unpkg.com/release-it@21/schema/release-it.json",
   "git": {
     "requireBranch": "main",
     "requireCleanWorkingDir": true,
@@ -31,7 +31,11 @@
     }
   },
   "hooks": {
-    "before:init": ["vp check", "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check"],
+    "before:init": [
+      "git fetch origin --tags --force --prune",
+      "vp check",
+      "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check"
+    ],
     "before:bump": "node scripts/validate-release-version.mjs ${latestVersion} ${version}",
     "after:bump": "cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings"
   }
