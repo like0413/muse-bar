@@ -1,0 +1,93 @@
+name: Build Windows Installer
+run-name: Build ${{ github.ref_name }} for verification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manual-windows-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    runs-on: windows-2025
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout selected ref
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@v1.18.0
+        with:
+          node-version: 24.19.0
+          cache: true
+          run-install: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build output
+        uses: Swatinem/rust-cache@v2.9.2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Check frontend
+        run: vp check
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Check Rust
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --locked -- -D warnings
+
+      - name: Build NSIS installer
+        shell: pwsh
+        run: vp exec tauri build --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Locate installer
+        id: installer
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -LiteralPath 'src-tauri/target/release/bundle/nsis' -Filter '*.exe' -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installers.Count)."
+          }
+
+          $installer = $installers[0]
+          $sizeMiB = [Math]::Round($installer.Length / 1MB, 2)
+          if ($installer.Length -gt 100MB) {
+            throw "$($installer.Name) is $sizeMiB MiB, exceeding the 100 MiB verification budget."
+          }
+
+          "path=$($installer.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "name=$($installer.Name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "size_mib=$sizeMiB" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Upload installer
+        id: upload
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          path: ${{ steps.installer.outputs.path }}
+          if-no-files-found: error
+          retention-days: 7
+          archive: false
+
+      - name: Write download summary
+        shell: pwsh
+        run: |
+          '### Windows verification installer' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '- Ref: `${{ github.ref_name }}`' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '- Commit: `${{ github.sha }}`' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '- File: `${{ steps.installer.outputs.name }}` (${{ steps.installer.outputs.size_mib }} MiB)' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '- [Download installer](${{ steps.upload.outputs.artifact-url }})' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
