@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing vX.Y.Z tag; leave empty to build the selected ref only
+        description: Existing vX.Y.Z or vX.Y.Z-prerelease tag; leave empty to build the selected ref only
         required: false
         type: string
       publish:
@@ -36,8 +36,8 @@ jobs:
         if: github.event_name == 'push' || inputs.publish
         shell: pwsh
         run: |
-          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
-            throw "Publishing requires an existing stable vX.Y.Z tag. Received: $env:RELEASE_TAG"
+          if ($env:RELEASE_TAG -notmatch '^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') {
+            throw "Publishing requires an existing vX.Y.Z or vX.Y.Z-prerelease tag. Received: $env:RELEASE_TAG"
           }
 
       - name: Checkout requested ref
@@ -125,7 +125,7 @@ jobs:
           tagName: ${{ env.RELEASE_TAG }}
           releaseName: Muse Bar ${{ env.RELEASE_TAG }}
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
           generateReleaseNotes: true
           retryAttempts: 2
           updaterJsonPreferNsis: true
@@ -195,10 +195,18 @@ jobs:
             throw 'latest.json does not contain a complete windows-x86_64 update.'
           }
 
-          $updateUri = [Uri]$windowsUpdate.url
-          $updateAssetName = [Uri]::UnescapeDataString($updateUri.Segments[-1])
-          if ($updateAssetName -notin $assetNames) {
-            throw "latest.json references an asset that is not present: $updateAssetName"
+          $updateAsset = $assets |
+            Where-Object { $_.apiUrl -eq $windowsUpdate.url -or $_.url -eq $windowsUpdate.url } |
+            Select-Object -First 1
+
+          if ($null -eq $updateAsset) {
+            $updateUri = [Uri]$windowsUpdate.url
+            $updateAssetName = [Uri]::UnescapeDataString($updateUri.Segments[-1])
+            $updateAsset = $assets | Where-Object { $_.name -eq $updateAssetName } | Select-Object -First 1
+          }
+
+          if ($null -eq $updateAsset -or $updateAsset.name -notlike '*.exe') {
+            throw "latest.json references an installer asset that is not present: $($windowsUpdate.url)"
           }
 
       - name: Publish completed release
