@@ -15,6 +15,9 @@
   "github": {
     "release": false
   },
+  "hooks": {
+    "after:bump": "cargo update --manifest-path src-tauri/Cargo.toml -p muse-bar"
+  },
   "plugins": {
     "@release-it/bumper": {
       "in": "src-tauri/tauri.conf.json",
