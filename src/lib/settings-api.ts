@@ -90,6 +90,18 @@ export function readCustomProgressColor(settings: SettingsPayload | undefined): 
   return typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color) ? color : '#0078D4'
 }
 
+/** 按当前设置解析进度条最终使用的颜色，供 Bar 及其附属浮层保持一致。 */
+export function readProgressColor(
+  settings: SettingsPayload | undefined,
+  artworkColor: string | null | undefined,
+  systemColor: string | null | undefined,
+): string {
+  const source = readProgressColorSource(settings)
+  if (source === 'custom') return readCustomProgressColor(settings)
+  if (source === 'system') return systemColor || '#0078D4'
+  return artworkColor || '#0078D4'
+}
+
 /** 从设置载荷中读取控制按钮显隐开关，旧设置缺少字段时默认显示。 */
 export function readShowControls(settings: SettingsPayload | undefined): boolean {
   return settings?.showControls !== false

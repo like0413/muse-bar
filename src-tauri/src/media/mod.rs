@@ -9,5 +9,5 @@ mod selection;
 
 pub(crate) use activity::{MediaSelectionReason, MediaSessionActivity};
 pub(crate) use control::{ControlAction, MediaControlError};
-pub(crate) use model::{MediaSessionIdentity, MediaSnapshot};
+pub(crate) use model::{MediaSessionIdentity, MediaSnapshot, MediaVolumeIdentity};
 pub(crate) use runtime::SystemMediaManager;

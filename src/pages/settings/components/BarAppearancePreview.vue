@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Music2Icon } from '@lucide/vue'
+import { Music2Icon, Volume2Icon } from '@lucide/vue'
 import { computed } from 'vue'
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -54,7 +54,13 @@ const textClass = computed(() =>
           {{ mediaSnapshot?.artist || '当前歌曲歌手' }}
         </p>
       </div>
-      <div v-if="showControls" class="relative shrink-0 text-sm" aria-hidden="true">◀　Ⅱ　▶</div>
+      <div
+        v-if="showControls"
+        class="relative flex shrink-0 items-center gap-2 text-sm"
+        aria-hidden="true"
+      >
+        <span>◀　Ⅱ　▶</span><Volume2Icon class="size-4" />
+      </div>
       <div
         v-if="showProgress && progressStyle === 'underline'"
         class="absolute bottom-0 left-0 h-0.5 w-3/5"

@@ -1,4 +1,4 @@
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::media::{
     ControlAction, MediaControlError, MediaSelectionReason, MediaSessionActivity,
@@ -34,12 +34,17 @@ pub fn refresh_selected_media_session(
 
 /// 对 Bar 当前选择的媒体会话执行播放、暂停、切歌或进度跳转。
 #[tauri::command]
-pub fn control_media(
-    app: AppHandle,
-    state: State<'_, SystemMediaManager>,
-    action: ControlAction,
-) -> Result<(), MediaControlError> {
-    state.control_media(&app, action)
+pub async fn control_media(app: AppHandle, action: ControlAction) -> Result<(), MediaControlError> {
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        worker_app
+            .state::<SystemMediaManager>()
+            .control_media(&worker_app, action)
+    })
+    .await
+    .map_err(|error| {
+        MediaControlError::windows_api(action, format!("媒体控制任务意外停止：{error}"))
+    })?
 }
 
 /// 返回当前会话各项数据组成的统一媒体快照。

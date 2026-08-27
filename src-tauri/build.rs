@@ -3,6 +3,11 @@ fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "control_media",
+            "control_current_application_volume",
+            "show_application_volume_flyout",
+            "show_ready_application_volume_flyout",
+            "hide_application_volume_flyout",
+            "get_current_application_volume",
             "get_current_media_snapshot",
             "get_media_session_activities",
             "get_media_session_identities",

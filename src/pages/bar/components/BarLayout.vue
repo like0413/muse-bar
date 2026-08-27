@@ -12,8 +12,27 @@ import {
   watch,
 } from 'vue'
 
+import {
+  controlCurrentApplicationVolume,
+  getCurrentApplicationVolume,
+  hideApplicationVolumeFlyout,
+  listenToApplicationVolumeStateChanged,
+  listenToVolumeFlyoutHidden,
+  listenToVolumeFlyoutHoverChanged,
+  readVolumeWheelDelta,
+  showApplicationVolumeFlyout,
+  type ApplicationVolumeAction,
+  type ApplicationVolumeState,
+  type VolumeFlyoutAnchor,
+} from '@/lib/application-volume-api'
 import { reportBarContentWidth } from '@/lib/bar-layout-api'
-import { readElementAlignment, readLyricsEnabled, readShowControls } from '@/lib/settings-api'
+import {
+  readElementAlignment,
+  readLyricsEnabled,
+  readProgressColor,
+  readShowControls,
+} from '@/lib/settings-api'
+import { TauriListenerScope } from '@/lib/tauri-listener-scope'
 import { cn, getErrorMessage } from '@/lib/utils'
 
 import { useBarStore } from '../bar-store'
@@ -31,12 +50,24 @@ const barStore = useBarStore()
 const preferredReducedMotion = usePreferredReducedMotion()
 const { settings, snapshot } = storeToRefs(barStore)
 const isHovered = shallowRef(false)
+const volumeState = shallowRef<ApplicationVolumeState | null>(null)
+const volumeUnavailableReason = shallowRef('正在读取当前应用音量')
+const volumePending = shallowRef(false)
+const volumeAnchor = shallowRef<VolumeFlyoutAnchor>()
+const volumeButtonHovered = shallowRef(false)
+const volumeFlyoutHovered = shallowRef(false)
+const volumeInteractionActive = shallowRef(false)
 const lyricsEnabled = computed(() => readLyricsEnabled(settings.value))
-const activeContent = computed(() => (lyricsEnabled.value && !isHovered.value ? 'lyrics' : 'media'))
+const activeContent = computed(() =>
+  lyricsEnabled.value && !isHovered.value && !volumeInteractionActive.value ? 'lyrics' : 'media',
+)
 const showMediaControls = computed(
   () => activeContent.value === 'media' && readShowControls(settings.value),
 )
 const elementAlignment = computed(() => readElementAlignment(settings.value))
+const progressColor = computed(() =>
+  readProgressColor(settings.value, snapshot.value?.accentColor, snapshot.value?.systemAccentColor),
+)
 const contentClass = computed(() =>
   cn('absolute inset-y-0 right-2 left-2 z-10 flex items-center gap-2', {
     'flex-row-reverse': elementAlignment.value === 'right',
@@ -58,6 +89,13 @@ let measurementRetryTimer: number | undefined
 let lastReportedNaturalWidth = 0
 let hasUnmounted = false
 let measurementRevision = 0
+const volumeListenerScope = new TauriListenerScope()
+let volumeRequestRevision = 0
+let hideFlyoutTimer: number | undefined
+let wheelFeedbackTimer: number | undefined
+let wheelAccumulator = 0
+let queuedAdjustment = 0
+let isApplyingAdjustment = false
 
 /** 将 getComputedStyle 返回的像素文本安全转换为数值。 */
 function readCssPixels(value: string): number {
@@ -164,6 +202,143 @@ function startMeasurement(): void {
   })
 }
 
+async function refreshVolume(): Promise<void> {
+  const sessionKey = snapshot.value?.sessionKey
+  const requestRevision = ++volumeRequestRevision
+  if (!showMediaControls.value || sessionKey === undefined) {
+    volumeState.value = null
+    volumeUnavailableReason.value = '当前没有媒体会话'
+    return
+  }
+  try {
+    const state = await getCurrentApplicationVolume(sessionKey)
+    if (requestRevision !== volumeRequestRevision || snapshot.value?.sessionKey !== sessionKey)
+      return
+    volumeState.value = state
+    volumeUnavailableReason.value = state ? '' : '当前应用没有可用的音频会话'
+  } catch (error) {
+    if (requestRevision !== volumeRequestRevision) return
+    volumeState.value = null
+    volumeUnavailableReason.value = `无法读取当前应用音量：${getErrorMessage(error)}`
+  }
+}
+
+async function controlVolume(action: ApplicationVolumeAction): Promise<void> {
+  const sessionKey = snapshot.value?.sessionKey
+  if (sessionKey === undefined || volumePending.value) return
+  volumePending.value = true
+  try {
+    volumeState.value = await controlCurrentApplicationVolume(sessionKey, action)
+    volumeUnavailableReason.value = ''
+  } catch (error) {
+    volumeUnavailableReason.value = `音量控制失败：${getErrorMessage(error)}`
+    await refreshVolume()
+  } finally {
+    volumePending.value = false
+  }
+}
+
+async function drainVolumeAdjustments(): Promise<void> {
+  if (isApplyingAdjustment) return
+  isApplyingAdjustment = true
+  try {
+    while (queuedAdjustment !== 0) {
+      const deltaPercent = queuedAdjustment
+      queuedAdjustment = 0
+      await controlVolume({ type: 'adjust', deltaPercent })
+    }
+  } finally {
+    isApplyingAdjustment = false
+  }
+}
+
+function enqueueVolumeAdjustment(deltaPercent: number): void {
+  queuedAdjustment = Math.max(-20, Math.min(20, queuedAdjustment + deltaPercent))
+  void drainVolumeAdjustments()
+}
+
+function clearHideFlyoutTimer(): void {
+  if (hideFlyoutTimer !== undefined) window.clearTimeout(hideFlyoutTimer)
+  hideFlyoutTimer = undefined
+}
+
+function scheduleFlyoutHide(): void {
+  clearHideFlyoutTimer()
+  if (volumeButtonHovered.value || volumeFlyoutHovered.value || wheelFeedbackTimer !== undefined)
+    return
+  hideFlyoutTimer = window.setTimeout(() => {
+    hideFlyoutTimer = undefined
+    volumeInteractionActive.value = false
+    void hideApplicationVolumeFlyout()
+  }, 250)
+}
+
+function showVolumeFlyout(): void {
+  const anchor = volumeAnchor.value
+  const sessionKey = snapshot.value?.sessionKey
+  if (!anchor || sessionKey === undefined || !volumeState.value || !showMediaControls.value) return
+  clearHideFlyoutTimer()
+  volumeInteractionActive.value = true
+  void showApplicationVolumeFlyout(anchor, sessionKey, progressColor.value).catch(
+    (error: unknown) => {
+      volumeUnavailableReason.value = `音量浮层打开失败：${getErrorMessage(error)}`
+    },
+  )
+}
+
+async function handleVolumeAnchorEntered(): Promise<void> {
+  volumeButtonHovered.value = true
+  if (!volumeState.value) await refreshVolume()
+  if (!volumeButtonHovered.value) return
+  showVolumeFlyout()
+}
+
+function handleVolumeAnchorLeft(): void {
+  volumeButtonHovered.value = false
+  scheduleFlyoutHide()
+}
+
+function showWheelFeedback(): void {
+  showVolumeFlyout()
+  if (wheelFeedbackTimer !== undefined) window.clearTimeout(wheelFeedbackTimer)
+  wheelFeedbackTimer = window.setTimeout(() => {
+    wheelFeedbackTimer = undefined
+    scheduleFlyoutHide()
+  }, 1200)
+}
+
+async function applyWheelAdjustment(deltaPercent: number): Promise<void> {
+  if (!volumeState.value) await refreshVolume()
+  if (!volumeState.value) return
+  enqueueVolumeAdjustment(deltaPercent)
+  showWheelFeedback()
+}
+
+function handleVolumeWheel(event: WheelEvent): void {
+  if (!showMediaControls.value || !volumeAnchor.value) return
+  const delta = readVolumeWheelDelta(event)
+  if (delta === null) return
+  event.preventDefault()
+  if (wheelAccumulator !== 0 && Math.sign(wheelAccumulator) !== Math.sign(delta)) {
+    wheelAccumulator = 0
+  }
+  wheelAccumulator += delta
+  if (Math.abs(wheelAccumulator) < 40) return
+  const deltaPercent = wheelAccumulator < 0 ? 2 : -2
+  wheelAccumulator = 0
+  void applyWheelAdjustment(deltaPercent)
+}
+
+async function toggleVolumeMute(): Promise<void> {
+  if (!volumeState.value) await refreshVolume()
+  if (volumeState.value) await controlVolume({ type: 'toggleMute' })
+}
+
+function handleBarMouseLeave(): void {
+  isHovered.value = false
+  scheduleFlyoutHide()
+}
+
 watch([() => snapshot.value?.title, () => snapshot.value?.artist], async () => {
   await nextTick()
   scheduleMeasurement()
@@ -175,13 +350,59 @@ watch(settings, async () => {
   scheduleMeasurement()
 })
 
-onMounted(startMeasurement)
+watch(
+  [() => snapshot.value?.sessionKey, showMediaControls],
+  ([, controlsVisible]) => {
+    queuedAdjustment = 0
+    wheelAccumulator = 0
+    if (!controlsVisible) {
+      volumeInteractionActive.value = false
+      volumeRequestRevision += 1
+      volumeState.value = null
+      void hideApplicationVolumeFlyout()
+      return
+    }
+    void refreshVolume()
+  },
+  { immediate: true },
+)
+
+onMounted(() => {
+  startMeasurement()
+  const lifecycleRevision = volumeListenerScope.activate()
+  void volumeListenerScope.register(
+    lifecycleRevision,
+    listenToVolumeFlyoutHoverChanged((hovered) => {
+      volumeFlyoutHovered.value = hovered
+      if (hovered) clearHideFlyoutTimer()
+      else scheduleFlyoutHide()
+    }),
+  )
+  void volumeListenerScope.register(
+    lifecycleRevision,
+    listenToApplicationVolumeStateChanged((nextState) => {
+      if (snapshot.value?.sessionKey === nextState.sessionKey) volumeState.value = nextState
+    }),
+  )
+  void volumeListenerScope.register(
+    lifecycleRevision,
+    listenToVolumeFlyoutHidden(() => {
+      volumeFlyoutHovered.value = false
+      volumeButtonHovered.value = false
+      volumeInteractionActive.value = false
+    }),
+  )
+})
 onBeforeUnmount(() => {
   hasUnmounted = true
   measurementRevision += 1
   resizeObserver?.disconnect()
   if (measurementFrame !== undefined) window.cancelAnimationFrame(measurementFrame)
   if (measurementRetryTimer !== undefined) window.clearTimeout(measurementRetryTimer)
+  volumeListenerScope.deactivate()
+  clearHideFlyoutTimer()
+  if (wheelFeedbackTimer !== undefined) window.clearTimeout(wheelFeedbackTimer)
+  void hideApplicationVolumeFlyout()
 })
 </script>
 
@@ -193,7 +414,7 @@ onBeforeUnmount(() => {
       class="bg-secondary text-secondary-foreground relative flex h-full w-full items-center gap-2 overflow-hidden border px-2 text-sm font-medium"
       @contextmenu.prevent="emit('openSettings')"
       @mouseenter="isHovered = true"
-      @mouseleave="isHovered = false"
+      @mouseleave="handleBarMouseLeave"
     >
       <BarProgress />
       <div data-bar-content :class="contentClass">
@@ -213,7 +434,17 @@ onBeforeUnmount(() => {
             </motion.div>
           </AnimatePresence>
         </div>
-        <BarMediaControls v-if="showMediaControls" />
+        <BarMediaControls
+          v-if="showMediaControls"
+          :volume-state="volumeState"
+          :volume-unavailable-reason="volumeUnavailableReason"
+          :volume-pending="volumePending"
+          @volume-anchor-changed="volumeAnchor = $event"
+          @volume-anchor-entered="handleVolumeAnchorEntered"
+          @volume-anchor-left="handleVolumeAnchorLeft"
+          @volume-wheel="handleVolumeWheel"
+          @toggle-volume-mute="toggleVolumeMute"
+        />
       </div>
     </section>
   </main>

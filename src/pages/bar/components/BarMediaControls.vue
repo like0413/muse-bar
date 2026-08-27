@@ -1,10 +1,20 @@
 <script setup lang="ts">
-import { PauseIcon, PlayIcon, SkipBackIcon, SkipForwardIcon } from '@lucide/vue'
+import {
+  PauseIcon,
+  PlayIcon,
+  SkipBackIcon,
+  SkipForwardIcon,
+  VolumeIcon,
+  Volume1Icon,
+  Volume2Icon,
+  VolumeXIcon,
+} from '@lucide/vue'
 import { storeToRefs } from 'pinia'
-import { computed, shallowRef } from 'vue'
+import { computed, onMounted, shallowRef, useTemplateRef, type ComponentPublicInstance } from 'vue'
 
 import { Button } from '@/components/ui/button'
 import { ButtonGroup } from '@/components/ui/button-group'
+import type { ApplicationVolumeState, VolumeFlyoutAnchor } from '@/lib/application-volume-api'
 import { controlMedia } from '@/lib/media-control-api'
 import type { ControlAction } from '@/lib/media-types'
 import { getErrorMessage } from '@/lib/utils'
@@ -12,8 +22,22 @@ import { getErrorMessage } from '@/lib/utils'
 import { useBarStore } from '../bar-store'
 
 const barStore = useBarStore()
+const props = defineProps<{
+  volumeState: ApplicationVolumeState | null
+  volumeUnavailableReason: string
+  volumePending: boolean
+}>()
+const emit = defineEmits<{
+  volumeAnchorChanged: [anchor: VolumeFlyoutAnchor]
+  volumeAnchorEntered: []
+  volumeAnchorLeft: []
+  volumeWheel: [event: WheelEvent]
+  toggleVolumeMute: []
+}>()
 const { snapshot } = storeToRefs(barStore)
+const volumeButton = useTemplateRef<ComponentPublicInstance>('volumeButton')
 const isControlPending = shallowRef(false)
+const MEDIA_CONTROL_TIMEOUT_MS = 3_000
 const isPlaying = computed(() => snapshot.value?.playbackStatus === 'playing')
 const capabilities = computed(() => snapshot.value?.capabilities)
 const canTogglePlayPause = computed(() => {
@@ -21,6 +45,36 @@ const canTogglePlayPause = computed(() => {
   if (!currentCapabilities) return false
   return isPlaying.value ? currentCapabilities.canPause : currentCapabilities.canPlay
 })
+const volumeTitle = computed(() => {
+  if (!props.volumeState) return props.volumeUnavailableReason || '当前应用没有可用的音频会话'
+  return props.volumeState.muted
+    ? `当前应用音量：${props.volumeState.levelPercent}%（已静音）`
+    : `当前应用音量：${props.volumeState.levelPercent}%`
+})
+const volumeIcon = computed(() => {
+  if (!props.volumeState) return VolumeIcon
+  if (props.volumeState.muted || props.volumeState.levelPercent === 0) return VolumeXIcon
+  return props.volumeState.levelPercent < 50 ? Volume1Icon : Volume2Icon
+})
+
+function reportVolumeAnchor(): void {
+  const element = volumeButton.value?.$el
+  if (!(element instanceof HTMLElement)) return
+  const rect = element.getBoundingClientRect()
+  emit('volumeAnchorChanged', {
+    x: rect.x,
+    y: rect.y,
+    width: rect.width,
+    height: rect.height,
+  })
+}
+
+function handleVolumeMouseEnter(): void {
+  reportVolumeAnchor()
+  emit('volumeAnchorEntered')
+}
+
+onMounted(reportVolumeAnchor)
 
 /** 阻止同一会话收到并发操作，并把播放器返回的失败原因写入诊断信息。 */
 async function performControl(action: ControlAction): Promise<void> {
@@ -28,11 +82,21 @@ async function performControl(action: ControlAction): Promise<void> {
 
   isControlPending.value = true
   barStore.setControlError('')
+  let timeout: number | undefined
   try {
-    await controlMedia(action)
+    await Promise.race([
+      controlMedia(action),
+      new Promise<never>((_, reject) => {
+        timeout = window.setTimeout(
+          () => reject(new Error('播放器响应超时，请稍后重试')),
+          MEDIA_CONTROL_TIMEOUT_MS,
+        )
+      }),
+    ])
   } catch (error) {
     barStore.setControlError(`控制失败：${getErrorMessage(error)}`)
   } finally {
+    if (timeout !== undefined) window.clearTimeout(timeout)
     isControlPending.value = false
   }
 }
@@ -45,7 +109,8 @@ async function performControl(action: ControlAction): Promise<void> {
       size="icon-sm"
       aria-label="上一曲"
       title="上一曲"
-      :disabled="isControlPending || !capabilities?.canPrevious"
+      :disabled="!capabilities?.canPrevious"
+      :aria-busy="isControlPending"
       @click="performControl({ type: 'previous' })"
     >
       <SkipBackIcon data-icon="inline-start" />
@@ -55,7 +120,8 @@ async function performControl(action: ControlAction): Promise<void> {
       size="icon-sm"
       :aria-label="isPlaying ? '暂停' : '播放'"
       :title="isPlaying ? '暂停' : '播放'"
-      :disabled="isControlPending || !canTogglePlayPause"
+      :disabled="!canTogglePlayPause"
+      :aria-busy="isControlPending"
       @click="performControl({ type: 'togglePlayPause' })"
     >
       <PauseIcon v-if="isPlaying" data-icon="inline-start" />
@@ -66,10 +132,25 @@ async function performControl(action: ControlAction): Promise<void> {
       size="icon-sm"
       aria-label="下一曲"
       title="下一曲"
-      :disabled="isControlPending || !capabilities?.canNext"
+      :disabled="!capabilities?.canNext"
+      :aria-busy="isControlPending"
       @click="performControl({ type: 'next' })"
     >
       <SkipForwardIcon data-icon="inline-start" />
+    </Button>
+    <Button
+      ref="volumeButton"
+      variant="ghost"
+      size="icon-sm"
+      aria-label="当前应用音量"
+      :title="volumeTitle"
+      :aria-busy="volumePending"
+      @mouseenter="handleVolumeMouseEnter"
+      @mouseleave="emit('volumeAnchorLeft')"
+      @wheel.stop="emit('volumeWheel', $event)"
+      @click="emit('toggleVolumeMute')"
+    >
+      <component :is="volumeIcon" data-icon="inline-start" />
     </Button>
   </ButtonGroup>
 </template>

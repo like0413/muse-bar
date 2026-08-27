@@ -32,6 +32,28 @@ impl MediaPlayerKind {
     pub(crate) fn is_supported(self) -> bool {
         self != Self::Other
     }
+
+    /// 判断音频会话所属进程是否与已识别播放器相符，覆盖多进程播放器的子进程。
+    pub(crate) fn matches_process_image(self, image_name: &str) -> bool {
+        let normalized = image_name.to_ascii_lowercase();
+        match self {
+            Self::QqMusic => normalized.contains("qqmusic"),
+            Self::NeteaseCloudMusic => {
+                normalized.contains("cloudmusic") || normalized.contains("netease")
+            }
+            Self::KugouMusic => normalized.contains("kugou") || normalized.contains("kgmusic"),
+            Self::QishuiMusic => normalized.contains("qishui") || normalized.contains("luna"),
+            Self::Other => false,
+        }
+    }
+}
+
+/// 应用音量模块匹配 Core Audio 会话所需的最小媒体身份。
+#[derive(Debug, Clone)]
+pub(crate) struct MediaVolumeIdentity {
+    pub(crate) session_key: u64,
+    pub(crate) source_app_id: String,
+    pub(crate) player_kind: MediaPlayerKind,
 }
 
 struct PlayerIdentificationRule {

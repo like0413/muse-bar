@@ -6,3 +6,4 @@ pub mod runtime;
 pub mod settings;
 pub mod taskbar;
 pub mod updater;
+pub mod volume;

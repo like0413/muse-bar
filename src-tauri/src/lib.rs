@@ -30,6 +30,12 @@ mod taskbar;
 /// GitHub Release 更新检查、下载与安装状态。
 mod updater;
 
+/// 当前媒体应用的 Windows Core Audio 会话音量。
+mod volume;
+
+/// 音量按钮上方的无焦点独立浮层窗口。
+mod volume_flyout;
+
 /// 配置插件并启动整个应用共享的 Tauri 运行时。
 pub fn run() {
     let app = tauri::Builder::default()
@@ -65,6 +71,8 @@ pub fn run() {
 
             // 媒体管理器初始化期间也可能发生 WinRT 错误，因此调试日志必须先就绪。
             app.manage(media::SystemMediaManager::initialize(app.handle()));
+            app.manage(volume::ApplicationVolumeManager::start()?);
+            app.manage(volume_flyout::VolumeFlyoutManager::default());
 
             if let Err(error) = autostart::synchronize(app.handle(), launch_on_startup) {
                 log::error!("启动时无法同步开机启动设置：{error}");
@@ -94,6 +102,11 @@ pub fn run() {
             commands::media::get_media_session_identities,
             commands::media::get_media_session_activities,
             commands::media::refresh_selected_media_session,
+            commands::volume::get_current_application_volume,
+            commands::volume::control_current_application_volume,
+            commands::volume::show_application_volume_flyout,
+            commands::volume::show_ready_application_volume_flyout,
+            commands::volume::hide_application_volume_flyout,
             commands::runtime::get_runtime_info,
             commands::updater::get_update_status,
             commands::updater::check_for_update,
@@ -108,6 +121,8 @@ pub fn run() {
     app.run(|app, event| {
         if matches!(event, tauri::RunEvent::Exit) {
             app.state::<media::SystemMediaManager>().request_shutdown();
+            app.state::<volume::ApplicationVolumeManager>()
+                .request_shutdown();
             app.state::<taskbar::ExplorerMonitor>().request_shutdown();
         }
         if let tauri::RunEvent::ExitRequested {

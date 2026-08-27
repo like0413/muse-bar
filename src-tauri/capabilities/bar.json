@@ -7,11 +7,15 @@
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "allow-control-media",
+    "allow-control-current-application-volume",
     "allow-get-current-media-snapshot",
+    "allow-get-current-application-volume",
+    "allow-hide-application-volume-flyout",
     "allow-get-settings",
     "allow-open-settings-window",
     "allow-refresh-selected-media-session",
     "allow-report-bar-content-width",
-    "allow-set-bar-media-available"
+    "allow-set-bar-media-available",
+    "allow-show-application-volume-flyout"
   ]
 }

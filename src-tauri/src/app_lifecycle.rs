@@ -149,6 +149,7 @@ pub(crate) fn synchronize_bar_visibility<R: Runtime>(app: &AppHandle<R>) -> Resu
         // 统一复用 Explorer 恢复通道，由 Child 宿主完成挂载并原生显示窗口。
         crate::taskbar::request_recovery()?;
     } else if let Some(window) = app.get_window(BAR_WINDOW_LABEL) {
+        crate::volume_flyout::hide(app);
         crate::taskbar::hide_window(&window)?;
     }
 

@@ -2,12 +2,7 @@
 import { storeToRefs } from 'pinia'
 import { computed } from 'vue'
 
-import {
-  readCustomProgressColor,
-  readProgressColorSource,
-  readProgressStyle,
-  readShowProgress,
-} from '@/lib/settings-api'
+import { readProgressColor, readProgressStyle, readShowProgress } from '@/lib/settings-api'
 
 import { useBarStore } from '../bar-store'
 
@@ -15,12 +10,9 @@ const barStore = useBarStore()
 const { settings, snapshot } = storeToRefs(barStore)
 const showProgress = computed(() => readShowProgress(settings.value))
 const progressStyle = computed(() => readProgressStyle(settings.value))
-const accentColor = computed(() => {
-  const source = readProgressColorSource(settings.value)
-  if (source === 'custom') return readCustomProgressColor(settings.value)
-  if (source === 'system') return snapshot.value?.systemAccentColor || '#0078D4'
-  return snapshot.value?.accentColor || '#0078D4'
-})
+const accentColor = computed(() =>
+  readProgressColor(settings.value, snapshot.value?.accentColor, snapshot.value?.systemAccentColor),
+)
 const progressPercentage = computed(() => {
   const timeline = snapshot.value?.timeline
   if (!timeline) return 0

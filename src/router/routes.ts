@@ -15,4 +15,9 @@ export const routes: RouteRecordRaw[] = [
     name: 'settings',
     component: () => import('@/pages/settings/index.vue'),
   },
+  {
+    path: '/volume',
+    name: 'volume',
+    component: () => import('@/pages/volume/index.vue'),
+  },
 ]

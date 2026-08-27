@@ -38,6 +38,26 @@
         "minHeight": 520,
         "center": true,
         "visible": false
+      },
+      {
+        "label": "volume",
+        "create": false,
+        "title": "当前应用音量",
+        "url": "index.html#/volume",
+        "width": 48,
+        "height": 176,
+        "visible": false,
+        "focus": false,
+        "focusable": false,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "skipTaskbar": true
       }
     ],
     "security": {

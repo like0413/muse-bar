@@ -16,7 +16,7 @@ use super::{
     model::{
         bounded_media_text, identify_media_player, CurrentMediaMetadata,
         CurrentPlaybackCapabilities, CurrentPlaybackState, CurrentPlaybackStatus, CurrentTimeline,
-        MediaSessionIdentity, MediaSnapshot,
+        MediaSessionIdentity, MediaSnapshot, MediaVolumeIdentity,
     },
 };
 use tauri::{AppHandle, Emitter, Runtime};
@@ -390,6 +390,17 @@ impl SystemMediaManager {
         };
         runtime.control_media(action)
     }
+
+    /// 返回 Bar 当前观察的媒体身份，并校验调用方仍指向同一会话。
+    pub(crate) fn current_volume_identity<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        expected_session_key: u64,
+    ) -> Result<MediaVolumeIdentity, String> {
+        self.with_runtime(app, |runtime| {
+            runtime.current_volume_identity(expected_session_key)
+        })
+    }
 }
 
 fn media_runtime_retry_is_due(retry_after: Option<Instant>, now: Instant) -> bool {
@@ -479,6 +490,29 @@ impl SystemMediaRuntime {
             .observed_session()
             .map_err(|message| MediaControlError::windows_api(action, message))?;
         execute_control_action(session.as_ref(), action)
+    }
+
+    /// 读取当前媒体会话的来源身份，阻止切换播放器后的延迟音量请求命中新会话。
+    fn current_volume_identity(
+        &self,
+        expected_session_key: u64,
+    ) -> Result<MediaVolumeIdentity, String> {
+        let session = self
+            .observed_session()?
+            .ok_or_else(|| "当前没有可控制的媒体会话".to_owned())?;
+        let actual_session_key = session_key(&session);
+        if actual_session_key != expected_session_key {
+            return Err("当前媒体会话已经切换".to_owned());
+        }
+        let source_app_id = session
+            .SourceAppUserModelId()
+            .map_err(|error| format!("无法读取当前媒体来源：{error}"))?
+            .to_string();
+        Ok(MediaVolumeIdentity {
+            session_key: actual_session_key,
+            player_kind: identify_media_player(&source_app_id),
+            source_app_id,
+        })
     }
 
     /// 返回 Bar 当前真正观察的会话，而不是 Windows 自行选出的 CurrentSession。

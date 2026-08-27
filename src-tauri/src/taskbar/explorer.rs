@@ -339,6 +339,8 @@ fn wait_for_bar_recovery(app: &AppHandle, shutdown: &AtomicBool) -> Result<(), S
 /// Tauri 的 Windows 实现要求从非主线程调用窗口与 WebView 创建接口；接口内部会把
 /// 真正的创建工作派发到事件循环，避免 WebView2 同步初始化造成主线程死锁。
 fn recover_bar_once(app: &AppHandle) -> Result<(), String> {
+    // Explorer 重启或 Bar 重建期间按钮坐标已经失效，不能让顶层浮层残留在桌面。
+    crate::volume_flyout::hide(app);
     let settings = app.state::<AppState>().settings()?;
     let taskbar = system::find_taskbar(&settings.target_monitor)?;
     let taskbar_rect = system::read_taskbar_rect(&taskbar)?;
