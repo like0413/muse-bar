@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Muse Bar",
-  "version": "0.1.1",
+  "version": "1.0.0",
   "identifier": "com.musebar.app",
   "build": {
     "frontendDist": "../dist",
@@ -70,7 +70,9 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "shortDescription": "Windows 11 taskbar media controller",
     "longDescription": "Muse Bar shows and controls the current Windows media session from the Windows 11 taskbar.",
     "icon": [
@@ -89,7 +91,9 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdDNzZFQkQ1MEFFMkZDNDMKUldSRC9PSUsxZXQyZkFGY3hhMGdoMXhhbmxlbU45aDd3UUtVbjYyZlRIUC9EaUY4M3lhL29rYm0K",
-      "endpoints": ["https://github.com/like0413/muse-bar/releases/latest/download/latest.json"],
+      "endpoints": [
+        "https://github.com/like0413/muse-bar/releases/latest/download/latest.json"
+      ],
       "windows": {
         "installMode": "passive"
       }
