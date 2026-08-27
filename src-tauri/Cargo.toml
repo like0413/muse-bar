@@ -1,6 +1,6 @@
 [package]
 name = "muse-bar"
-version = "1.0.2"
+version = "1.0.3"
 description = "A Windows 11 taskbar media controller"
 authors = ["Muse Bar contributors"]
 license = "MIT"
