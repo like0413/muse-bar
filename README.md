@@ -1,98 +1,62 @@
 # Muse Bar
 
-Muse Bar 是一个面向 Windows 11 的任务栏媒体控制工具。首版会通过 Windows
-系统媒体会话显示封面、歌曲名、歌手、播放状态和进度，并提供上一曲、下一曲、
-播放/暂停与可用时的进度跳转。
+Muse Bar 是一个专为 Windows 11 设计的任务栏媒体控制工具。它读取 Windows系统媒体传输控件（SMTC）中的当前媒体会话，将封面、歌曲信息、播放进度和常用控制直接嵌入 Explorer 任务栏。
 
-当前仓库已完成 Child 任务栏嵌入的技术闸门验证；透明渲染、鼠标交互、任务栏自动隐藏、
-全屏行为和 Explorer 重启恢复均已通过。当前版本只实现 Child 宿主；Owner 兼容模式保留为
-后续计划，不在现阶段实现。后续任务栏宿主和媒体功能会按照[架构与数据流](docs/architecture.md)
-中的边界逐步加入。
+> 当前项目仅面向 Windows 11 x64，仍处于早期开发阶段。歌词区域目前使用占位文本验证
+> 布局与交互，尚未接入真实歌词来源。
 
-## 环境要求
+### 当前边界
 
-- Windows 11 24H2 或更高版本
-- Rust stable 与 MSVC Windows 工具链
-- Vite+；Node.js 和 pnpm 版本由 Vite+ 根据 `package.json` 管理
+- 歌词模式只显示固定占位文本，用于验证任务栏空白区域计算和悬停切换效果。
+- Bar 上尚未提供拖动播放进度的交互；Rust 媒体控制层已经具备 seek 能力。
+- 安装包使用 Tauri 更新签名，但尚未配置 Windows Authenticode 代码签名，因此 Windows SmartScreen 仍可能显示未知发布者提示。
+
+## 技术栈
+
+| 层级       | 技术                                                         |
+| ---------- | ------------------------------------------------------------ |
+| 桌面运行时 | Tauri 2、WebView2                                            |
+| 原生后端   | Rust、Windows/WinRT API、Win32、UI Automation                |
+| 前端       | Vue 3、TypeScript、Composition API、Pinia、Vue Router        |
+| UI 与样式  | Tailwind CSS 4、shadcn-vue / Reka UI、Lucide、Motion for Vue |
+| 国际化     | Vue I18n（当前界面以中文为主）                               |
+| Web 工具链 | Vite+、Vite、Oxlint、Oxfmt、vue-tsc                          |
+| 安装与更新 | NSIS、Tauri Updater、GitHub Releases                         |
+| 发布       | release-it、GitHub Actions                                   |
+
+## 系统要求
+
+### 使用应用
+
+- Windows 11 x64
 - Microsoft Edge WebView2 Runtime
 
-## 首次准备
+### 本地开发
+
+- Windows 11 x64
+- [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)，安装
+  “使用 C++ 的桌面开发”工作负载
+- Rust stable MSVC 工具链（项目声明的最低 Rust 版本为 `1.77.2`）
+- [Vite+](https://viteplus.dev/guide/) 全局命令 `vp`
+- Node.js `^22.21.0` 或 `>=24.12.0`
+- pnpm `11.22.0`，由 Vite+ 按 `package.json` 的 `devEngines` 管理
+
+如果尚未安装 Vite+，可在 PowerShell 中执行官方安装命令：
 
 ```powershell
+irm https://vite.plus/ps1 | iex
+```
+
+## 快速开始
+
+```powershell
+git clone https://github.com/like0413/muse-bar.git
+cd muse-bar
 vp install
 vp env doctor
-```
-
-## 启动
-
-仅启动 Vue 前端预览：
-
-```powershell
-vp dev
-```
-
-启动完整 Tauri 桌面应用：
-
-```powershell
 vp exec tauri dev
 ```
 
-Tauri 会依据 `src-tauri/tauri.conf.json` 自动启动前端开发服务器。
+## License
 
-## 提交时自动校验
-
-开发过程中不需要手动运行 lint、format 或 check。执行 Git 提交时，`vite.config.ts`
-中的 staged hooks 会自动修复并检查前端代码，同时格式化和检查 Rust 代码。
-
-`vp build` 只构建 Vue 前端。完整 Windows 应用和安装包使用：
-
-```powershell
-vp exec tauri build
-```
-
-当前发布目标是无需管理员权限的当前用户 NSIS 安装包。
-
-## 发布与自动更新
-
-应用使用 GitHub Releases 和 Tauri 签名全量更新。首次发布前只需完成一次签名配置：
-
-1. 在仓库外生成带密码的更新密钥：
-
-   ```powershell
-   vp exec tauri signer generate -w C:\安全目录\muse-bar.key
-   ```
-
-2. 将生成的公钥完整内容替换到 `src-tauri/tauri.conf.json` 的
-   `plugins.updater.pubkey`；私钥不得提交。
-3. 在 GitHub 仓库 Actions Secrets 中保存私钥内容和密码，名称分别为
-   `TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。
-
-发布时只修改 `src-tauri/tauri.conf.json` 的应用版本并提交，然后推送相同版本标签：
-
-```powershell
-git tag v0.2.0
-git push origin main
-git push origin v0.2.0
-```
-
-GitHub Actions 会先完成前端和 Rust 静态检查，再构建签名的 Windows NSIS 安装包；
-所有文件上传成功后才公开 Release。签名私钥必须长期备份，遗失后已安装的客户端无法信任新密钥发布的更新。
-
-发布工作流使用 Vite+ 统一安装 Node.js、pnpm 和前端依赖缓存，并单独缓存 Rust 构建依赖。NSIS 安装包设有 100 MiB 上限，实际大小会写入每次工作流摘要，避免依赖或资源异常膨胀后被直接发布。
-
-## 文档
-
-- [架构、目录与数据流](docs/architecture.md)
-- [全面优化路线图与实施优先级](docs/Muse%20Bar%20全面优化路线图.md)
-- [原始模板验证记录](docs/baseline.md)
-- [Child 任务栏宿主技术闸门](docs/child-host-validation.md)
-
-## 分步开发约定
-
-每一个实现步骤都遵循相同节奏：
-
-1. 先说明该步骤解决的问题、涉及文件和数据流。
-2. 只实现当前范围，不提前加入后续功能。
-3. 为项目自有函数说明用途；复杂逻辑额外解释设计原因，显而易见的简单逻辑不堆砌注释。
-4. 提交前由用户运行当前功能；提交时由 staged hooks 自动执行代码检查。
-5. 独立提交，提交信息只描述这一小步。
+本项目基于 [MIT License](LICENSE) 开源。

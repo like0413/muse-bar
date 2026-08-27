@@ -2,6 +2,27 @@
   "name": "muse-bar",
   "version": "0.1.1",
   "private": true,
+  "description": "A Windows 11 taskbar media controller built with Vue and Tauri.",
+  "keywords": [
+    "media-control",
+    "rust",
+    "smtc",
+    "taskbar",
+    "tauri",
+    "vue",
+    "windows",
+    "windows-11"
+  ],
+  "homepage": "https://github.com/like0413/muse-bar#readme",
+  "bugs": {
+    "url": "https://github.com/like0413/muse-bar/issues"
+  },
+  "license": "MIT",
+  "author": "like0413",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/like0413/muse-bar.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vp dev",
