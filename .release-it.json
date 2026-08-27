@@ -16,7 +16,10 @@
     "release": false
   },
   "hooks": {
-    "after:bump": "cargo update --manifest-path src-tauri/Cargo.toml -p muse-bar"
+    "after:bump": [
+      "vp fmt package.json src-tauri/tauri.conf.json",
+      "cargo update --manifest-path src-tauri/Cargo.toml -p muse-bar"
+    ]
   },
   "plugins": {
     "@release-it/bumper": {
