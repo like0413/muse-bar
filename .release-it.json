@@ -11,10 +11,7 @@
     "tagAnnotation": "Release v${version}",
     "pushArgs": ["--atomic", "--follow-tags"]
   },
-  "npm": {
-    "publish": false,
-    "ignoreVersion": true
-  },
+  "npm": false,
   "github": {
     "release": false
   },
@@ -22,6 +19,7 @@
     "@release-it/bumper": {
       "in": "src-tauri/tauri.conf.json",
       "out": [
+        "package.json",
         "src-tauri/tauri.conf.json",
         {
           "file": "src-tauri/Cargo.toml",
