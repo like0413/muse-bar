@@ -1,6 +1,6 @@
 ![Muse Bar — 将媒体控制放进 Windows 11 任务栏](docs/assets/muse-bar-banner.png)
 
-Muse Bar 是一个专为 Windows 11 设计的任务栏媒体控制工具。它读取 Windows系统媒体传输控件（SMTC）中的当前媒体会话，将封面、歌曲信息、播放进度和常用控制直接嵌入 Explorer 任务栏。
+Muse Bar 是一个专为 Windows 11 设计的任务栏媒体控制工具。它读取 Windows系统媒体传输控件（SMTC）中的当前媒体会话，将封面、歌曲信息、播放进度、频谱和常用控制直接嵌入 Explorer 任务栏。
 
 > 当前项目仅面向 Windows 11 x64，仍处于早期开发阶段。歌词区域目前使用占位文本验证
 > 布局与交互，尚未接入真实歌词来源。
