@@ -1,0 +1,66 @@
+[package]
+name = "muse-bar"
+version = "0.1.0"
+description = "A Windows 11 taskbar media controller"
+authors = ["Muse Bar contributors"]
+license = "MIT"
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "muse_bar_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2"
+log = "0.4"
+rustfft = "6"
+wasapi = "0.24"
+# 真正的任务栏 Child WebView 需要 WindowBuilder、WebviewBuilder 和 add_child，
+# 这些多 WebView API 在 Tauri 2.11 仍由 unstable feature 暴露。
+tauri = { version = "2.11.3", features = ["unstable", "tray-icon"] }
+tauri-plugin-log = "2"
+tauri-plugin-autostart = "2.5.1"
+tauri-plugin-single-instance = "2.4.3"
+tauri-plugin-updater = "2.10.1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+base64 = "0.22"
+image = { version = "=0.25.5", default-features = false, features = ["jpeg", "png", "webp"] }
+windows = { version = "=0.61.3", features = [
+  "Media_Control",
+  "Storage_Streams",
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_Media_Audio",
+  "Win32_Media_Audio_Endpoints",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+  "Win32_System_WinRT",
+  "Win32_Storage_Packaging_Appx",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Accessibility",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

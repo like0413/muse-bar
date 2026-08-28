@@ -1,0 +1,68 @@
+import type { UnlistenFn } from '@tauri-apps/api/event'
+
+import {
+  getSettings,
+  listenToSettingsChanges,
+  readColorMode,
+  type ColorMode,
+  type SettingsPayload,
+} from '@/lib/settings-api'
+
+let resolveColorModeReady: (() => void) | undefined
+const colorModeReady = new Promise<void>((resolve) => {
+  resolveColorModeReady = resolve
+})
+
+/** 根据用户设置和系统偏好，给当前 WebView 的根节点应用深色类名。 */
+function applyColorMode(colorMode: ColorMode, systemColorMode: MediaQueryList): void {
+  const useDark = colorMode === 'dark' || (colorMode === 'system' && systemColorMode.matches)
+  document.documentElement.classList.toggle('dark', useDark)
+}
+
+/** 让当前前端窗口持续跟随持久化设置，并在系统模式变化时即时刷新。 */
+export async function startColorModeSync(): Promise<() => void> {
+  const systemColorMode = window.matchMedia('(prefers-color-scheme: dark)')
+  let currentColorMode: ColorMode = 'system'
+  let stopSettingsListener: UnlistenFn | undefined
+  let settingsRevision = 0
+
+  /** 将当前内存状态重新应用到当前 WebView。 */
+  const applyCurrentMode = () => applyColorMode(currentColorMode, systemColorMode)
+  /** 接收 Rust 广播的完整设置并提取颜色模式。 */
+  const handleSettings = (settings: SettingsPayload) => {
+    settingsRevision += 1
+    currentColorMode = readColorMode(settings)
+    applyCurrentMode()
+  }
+  /** 仅在跟随系统时响应 Windows 颜色模式变化。 */
+  const handleSystemColorModeChange = () => {
+    if (currentColorMode === 'system') applyCurrentMode()
+  }
+
+  // 异步读取设置完成前先使用系统模式，避免窗口初次出现时固定闪成浅色。
+  applyCurrentMode()
+  systemColorMode.addEventListener('change', handleSystemColorModeChange)
+
+  try {
+    // 先订阅再读取，避免初始化期间恰好发生的设置更新被遗漏。
+    const initialRevision = settingsRevision
+    stopSettingsListener = await listenToSettingsChanges(handleSettings)
+    const settings = await getSettings()
+    if (settingsRevision === initialRevision) handleSettings(settings)
+  } catch {
+    // 设置通路暂时不可用时保留“跟随系统”，窗口仍可正常显示。
+  }
+
+  resolveColorModeReady?.()
+  resolveColorModeReady = undefined
+
+  return () => {
+    stopSettingsListener?.()
+    systemColorMode.removeEventListener('change', handleSystemColorModeChange)
+  }
+}
+
+/** 等待当前 WebView 完成首次颜色模式应用。 */
+export function waitForColorModeReady(): Promise<void> {
+  return colorModeReady
+}

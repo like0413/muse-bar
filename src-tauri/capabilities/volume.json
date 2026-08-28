@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "volume",
+  "description": "Minimal permissions for the application-volume flyout",
+  "windows": ["volume"],
+  "permissions": [
+    "core:event:allow-emit-to",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-control-current-application-volume",
+    "allow-get-current-application-volume",
+    "allow-get-settings",
+    "allow-hide-application-volume-flyout",
+    "allow-show-ready-application-volume-flyout"
+  ]
+}

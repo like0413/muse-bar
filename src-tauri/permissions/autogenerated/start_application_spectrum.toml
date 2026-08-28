@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-application-spectrum"
+description = "Enables the start_application_spectrum command without any pre-configured scope."
+commands.allow = ["start_application_spectrum"]
+
+[[permission]]
+identifier = "deny-start-application-spectrum"
+description = "Denies the start_application_spectrum command without any pre-configured scope."
+commands.deny = ["start_application_spectrum"]

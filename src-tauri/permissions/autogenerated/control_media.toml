@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-control-media"
+description = "Enables the control_media command without any pre-configured scope."
+commands.allow = ["control_media"]
+
+[[permission]]
+identifier = "deny-control-media"
+description = "Denies the control_media command without any pre-configured scope."
+commands.deny = ["control_media"]

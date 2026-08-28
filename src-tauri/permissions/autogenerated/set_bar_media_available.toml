@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-bar-media-available"
+description = "Enables the set_bar_media_available command without any pre-configured scope."
+commands.allow = ["set_bar_media_available"]
+
+[[permission]]
+identifier = "deny-set-bar-media-available"
+description = "Denies the set_bar_media_available command without any pre-configured scope."
+commands.deny = ["set_bar_media_available"]

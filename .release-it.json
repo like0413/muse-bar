@@ -1,0 +1,37 @@
+{
+  "$schema": "https://unpkg.com/release-it@21/schema/release-it.json",
+  "git": {
+    "requireBranch": "main",
+    "requireCleanWorkingDir": true,
+    "requireUpstream": true,
+    "requireCommits": true,
+    "getLatestTagFromAllRefs": true,
+    "commitMessage": "chore: release v${version}",
+    "tagName": "v${version}",
+    "tagAnnotation": "Release v${version}",
+    "pushArgs": ["--atomic", "--follow-tags"]
+  },
+  "npm": false,
+  "github": {
+    "release": false
+  },
+  "hooks": {
+    "after:bump": [
+      "vp fmt package.json src-tauri/tauri.conf.json",
+      "cargo update --manifest-path src-tauri/Cargo.toml -p muse-bar"
+    ]
+  },
+  "plugins": {
+    "@release-it/bumper": {
+      "in": "src-tauri/tauri.conf.json",
+      "out": [
+        "package.json",
+        "src-tauri/tauri.conf.json",
+        {
+          "file": "src-tauri/Cargo.toml",
+          "path": "package.version"
+        }
+      ]
+    }
+  }
+}

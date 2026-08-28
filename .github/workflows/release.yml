@@ -1,0 +1,216 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing vX.Y.Z or vX.Y.Z-prerelease tag; leave empty to build the selected ref only
+        required: false
+        type: string
+      publish:
+        description: Publish the selected tag after a successful build
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish-windows:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+      PUBLISH_RELEASE: ${{ github.event_name == 'push' || inputs.publish }}
+
+    steps:
+      - name: Validate release tag format
+        if: github.event_name == 'push' || inputs.publish
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') {
+            throw "Publishing requires an existing vX.Y.Z or vX.Y.Z-prerelease tag. Received: $env:RELEASE_TAG"
+          }
+
+      - name: Checkout requested ref
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+          persist-credentials: false
+
+      - name: Validate application release configuration
+        shell: pwsh
+        run: |
+          $config = Get-Content -Raw -LiteralPath 'src-tauri/tauri.conf.json' | ConvertFrom-Json
+          if ([string]::IsNullOrWhiteSpace($config.plugins.updater.pubkey) -or
+              $config.plugins.updater.pubkey -eq 'REPLACE_WITH_TAURI_UPDATER_PUBLIC_KEY') {
+            throw 'Commit the Tauri updater public key before building updater artifacts.'
+          }
+
+          if ($env:PUBLISH_RELEASE -eq 'true') {
+            $tagVersion = $env:RELEASE_TAG.Substring(1)
+            if ($tagVersion -ne $config.version) {
+              throw "Tag version $tagVersion does not match tauri.conf.json version $($config.version)."
+            }
+          }
+
+      - name: Validate updater signing secrets
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw 'GitHub secret TAURI_SIGNING_PRIVATE_KEY is missing.'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
+            throw 'GitHub secret TAURI_SIGNING_PRIVATE_KEY_PASSWORD is missing.'
+          }
+
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@v1.18.0
+        with:
+          node-version: 24.19.0
+          cache: true
+          run-install: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build output
+        uses: Swatinem/rust-cache@v2.9.2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Check frontend
+        run: vp check
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Check Rust
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --locked -- -D warnings
+
+      - name: Build signed NSIS artifacts without publishing
+        if: github.event_name == 'workflow_dispatch' && !inputs.publish
+        uses: tauri-apps/tauri-action@action-v1.0.0
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tauriScript: vp exec tauri
+          args: --bundles nsis
+
+      - name: Build and upload signed NSIS release
+        if: github.event_name == 'push' || inputs.publish
+        uses: tauri-apps/tauri-action@action-v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: Muse Bar ${{ env.RELEASE_TAG }}
+          releaseDraft: true
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
+          generateReleaseNotes: true
+          retryAttempts: 2
+          updaterJsonPreferNsis: true
+          tauriScript: vp exec tauri
+          args: --bundles nsis
+
+      - name: Validate local updater artifacts
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -LiteralPath 'src-tauri/target/release/bundle/nsis' -Filter '*.exe' -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installers.Count)."
+          }
+
+          $installer = $installers[0]
+          $signaturePath = "$($installer.FullName).sig"
+          if (-not (Test-Path -LiteralPath $signaturePath -PathType Leaf) -or
+              (Get-Item -LiteralPath $signaturePath).Length -eq 0) {
+            throw "The updater signature is missing or empty: $signaturePath"
+          }
+
+          $sizeMiB = [Math]::Round($installer.Length / 1MB, 2)
+          "- $($installer.Name): $sizeMiB MiB" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($installer.Length -gt 100MB) {
+            throw "$($installer.Name) is $sizeMiB MiB, exceeding the 100 MiB release budget."
+          }
+
+      - name: Validate uploaded updater manifest
+        if: github.event_name == 'push' || inputs.publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $releaseJson = gh release view "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" --json assets
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to inspect the draft release for $env:RELEASE_TAG."
+          }
+
+          $assets = @($releaseJson | ConvertFrom-Json | Select-Object -ExpandProperty assets)
+          $assetNames = @($assets | Select-Object -ExpandProperty name)
+          if ('latest.json' -notin $assetNames) {
+            throw 'The release does not contain latest.json.'
+          }
+          if (-not ($assetNames | Where-Object { $_ -like '*.exe' })) {
+            throw 'The release does not contain an NSIS installer.'
+          }
+          if (-not ($assetNames | Where-Object { $_ -like '*.exe.sig' })) {
+            throw 'The release does not contain an updater signature.'
+          }
+
+          $manifestDirectory = Join-Path $env:RUNNER_TEMP "muse-bar-updater-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          New-Item -ItemType Directory -Path $manifestDirectory | Out-Null
+          gh release download "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" --pattern 'latest.json' --dir $manifestDirectory
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to download latest.json for validation.'
+          }
+
+          $manifest = Get-Content -Raw -LiteralPath (Join-Path $manifestDirectory 'latest.json') | ConvertFrom-Json
+          if ($manifest.version.TrimStart('v') -ne $env:RELEASE_TAG.Substring(1)) {
+            throw "latest.json version $($manifest.version) does not match $env:RELEASE_TAG."
+          }
+
+          $windowsUpdate = $manifest.platforms.'windows-x86_64'
+          if ($null -eq $windowsUpdate -or
+              [string]::IsNullOrWhiteSpace($windowsUpdate.url) -or
+              [string]::IsNullOrWhiteSpace($windowsUpdate.signature)) {
+            throw 'latest.json does not contain a complete windows-x86_64 update.'
+          }
+
+          $updateAsset = $assets |
+            Where-Object { $_.apiUrl -eq $windowsUpdate.url -or $_.url -eq $windowsUpdate.url } |
+            Select-Object -First 1
+
+          if ($null -eq $updateAsset) {
+            $updateUri = [Uri]$windowsUpdate.url
+            $updateAssetName = [Uri]::UnescapeDataString($updateUri.Segments[-1])
+            $updateAsset = $assets | Where-Object { $_.name -eq $updateAssetName } | Select-Object -First 1
+          }
+
+          if ($null -eq $updateAsset -or $updateAsset.name -notlike '*.exe') {
+            throw "latest.json references an installer asset that is not present: $($windowsUpdate.url)"
+          }
+
+      - name: Publish completed release
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" --draft=false
